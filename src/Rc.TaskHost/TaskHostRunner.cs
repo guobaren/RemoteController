@@ -522,7 +522,8 @@ public sealed class TaskHostSegmentWriter
         var fullPath = GetFullPath(relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllBytesAsync(fullPath, data.ToArray(), cancellationToken).ConfigureAwait(false);
-        return new TaskOutputSegment(jobId, stream, relativePath, startOffset, data.Length, DateTimeOffset.UtcNow);
+        var createdAtUtc = new FileInfo(fullPath).CreationTimeUtc;
+        return new TaskOutputSegment(jobId, stream, relativePath, startOffset, data.Length, createdAtUtc);
     }
 
     private string GetFullPath(string relativePath)

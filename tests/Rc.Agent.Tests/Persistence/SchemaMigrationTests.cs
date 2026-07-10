@@ -41,6 +41,23 @@ public sealed class SchemaMigrationTests
 
         Assert.True(tables.IsSupersetOf(RequiredTables));
     }
+
+    [Fact]
+    public async Task InitializeAsyncCreatesTheUniqueOutputSegmentPathIndex()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+
+        await using var connection = new SqliteConnection("Data Source=" + store.DatabasePath);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT [unique] FROM pragma_index_list('output_segments') WHERE name = 'ux_output_segments_relative_path';";
+
+        var isUnique = await command.ExecuteScalarAsync();
+
+        Assert.Equal(1L, isUnique);
+    }
 }
 
 internal sealed class TemporaryDirectory : IDisposable

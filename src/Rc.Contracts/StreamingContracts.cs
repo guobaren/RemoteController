@@ -12,6 +12,14 @@ public sealed class ByteChunk
 
     public ByteChunk(string jobId, JobOutputKind stream, long offset, byte[] data, bool isFinal)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        if (!Enum.IsDefined(stream))
+        {
+            throw new ArgumentOutOfRangeException(nameof(stream));
+        }
+
+        ArgumentNullException.ThrowIfNull(data);
         JobId = jobId;
         Stream = stream;
         Offset = offset;
@@ -36,6 +44,10 @@ public sealed class FileChunk
 
     public FileChunk(string transferSessionId, string relativePath, long offset, byte[] data, bool isFinal)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transferSessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentNullException.ThrowIfNull(data);
         TransferSessionId = transferSessionId;
         RelativePath = relativePath;
         Offset = offset;
@@ -60,6 +72,9 @@ public sealed class TransferChunk
 
     public TransferChunk(string transferSessionId, long offset, byte[] data, bool isFinal)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transferSessionId);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentNullException.ThrowIfNull(data);
         TransferSessionId = transferSessionId;
         Offset = offset;
         this.data = data.ToArray();

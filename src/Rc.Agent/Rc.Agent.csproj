@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Rc.Contracts\Rc.Contracts.csproj" />
+    <ProjectReference Include="..\Rc.TaskHost\Rc.TaskHost.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />

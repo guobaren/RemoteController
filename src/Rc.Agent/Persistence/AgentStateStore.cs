@@ -126,6 +126,19 @@ public sealed partial class AgentStateStore : IAsyncDisposable
         recordSecondVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
         await recordSecondVersion.ExecuteNonQueryAsync(cancellationToken);
         secondTransaction.Commit();
+
+        using var thirdTransaction = connection.BeginTransaction();
+        var outputSegmentPathMigration = connection.CreateCommand();
+        outputSegmentPathMigration.Transaction = thirdTransaction;
+        outputSegmentPathMigration.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS ux_output_segments_relative_path ON output_segments(relative_path);";
+        await outputSegmentPathMigration.ExecuteNonQueryAsync(cancellationToken);
+
+        var recordThirdVersion = connection.CreateCommand();
+        recordThirdVersion.Transaction = thirdTransaction;
+        recordThirdVersion.CommandText = "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc) VALUES (3, $appliedAtUtc);";
+        recordThirdVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+        await recordThirdVersion.ExecuteNonQueryAsync(cancellationToken);
+        thirdTransaction.Commit();
     }
 
     public async Task SaveJobSnapshotAsync(JobSnapshot snapshot, CancellationToken cancellationToken = default)
@@ -194,6 +207,23 @@ public sealed partial class AgentStateStore : IAsyncDisposable
             reader.IsDBNull(3) ? null : DateTimeOffset.Parse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture),
             reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4), System.Globalization.CultureInfo.InvariantCulture),
             error);
+    }
+
+    public async Task<IReadOnlyList<JobSnapshot>> ListJobSnapshotsAsync(JobState? state = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT job_id, state, exit_code, created_at_utc, started_at_utc, finished_at_utc, error_code, error_message, error_retryable FROM job_snapshots WHERE ($state IS NULL OR state = $state) ORDER BY created_at_utc, job_id;";
+        command.Parameters.AddWithValue("$state", state?.ToString() ?? (object)DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var snapshots = new List<JobSnapshot>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var error = reader.IsDBNull(6) ? null : new RemoteError(Enum.Parse<ErrorCode>(reader.GetString(6), false), reader.GetString(7), reader.GetInt64(8) != 0);
+            snapshots.Add(new JobSnapshot(reader.GetString(0), Enum.Parse<JobState>(reader.GetString(1), false), reader.IsDBNull(2) ? null : reader.GetInt32(2), DateTimeOffset.Parse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture), error));
+        }
+
+        return snapshots;
     }
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {

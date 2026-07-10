@@ -26,4 +26,22 @@ public sealed class JobSnapshotStoreTests
 
         Assert.Equal(snapshot, loaded);
     }
+
+    [Fact]
+    public async Task ListJobSnapshotsAsyncFiltersAndUsesStableCreationOrder()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        var createdAt = DateTimeOffset.UnixEpoch;
+        await store.SaveJobSnapshotAsync(new JobSnapshot("job-b", JobState.Running, null, createdAt, createdAt, null, null));
+        await store.SaveJobSnapshotAsync(new JobSnapshot("job-a", JobState.Running, null, createdAt, createdAt, null, null));
+        await store.SaveJobSnapshotAsync(new JobSnapshot("job-finished", JobState.Exited, 0, createdAt.AddSeconds(1), createdAt, createdAt.AddSeconds(2), null));
+
+        var running = await store.ListJobSnapshotsAsync(JobState.Running);
+        var all = await store.ListJobSnapshotsAsync();
+
+        Assert.Equal(["job-a", "job-b"], running.Select(job => job.JobId));
+        Assert.Equal(["job-a", "job-b", "job-finished"], all.Select(job => job.JobId));
+    }
 }

@@ -67,6 +67,179 @@ public sealed partial class AgentStateStore
         }
     }
 
+    public async Task<OutputSegmentInfo> RegisterOutputSegmentAsync(
+        TaskOutputSegment segment,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(segment.JobId);
+        ArgumentOutOfRangeException.ThrowIfNegative(segment.StartOffset);
+        ArgumentOutOfRangeException.ThrowIfNegative(segment.ByteLength);
+        if (!Enum.IsDefined(segment.Stream))
+        {
+            throw new ArgumentOutOfRangeException(nameof(segment));
+        }
+
+        var relativePath = NormalizeSegmentRelativePath(segment.RelativePath);
+        var fullPath = GetSegmentPath(relativePath);
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException("The task output segment file does not exist.", fullPath);
+        }
+
+        if (new FileInfo(fullPath).Length != segment.ByteLength)
+        {
+            throw new InvalidDataException("The task output segment length does not match its declared length.");
+        }
+
+        await outputMutationGate.WaitAsync(cancellationToken);
+        try
+        {
+            var existing = await GetOutputSegmentByRelativePathAsync(relativePath, cancellationToken);
+            if (existing is not null)
+            {
+                if (existing.JobId != segment.JobId || existing.Stream != segment.Stream ||
+                    existing.StartOffset != segment.StartOffset || existing.ByteLength != segment.ByteLength ||
+                    existing.CreatedAtUtc != segment.CreatedAtUtc)
+                {
+                    throw new InvalidDataException("The task output segment path is already registered with different metadata.");
+                }
+
+                return existing;
+            }
+
+            var segmentId = Guid.NewGuid().ToString("N");
+            await using var connection = await OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO output_segments (
+                    segment_id, job_id, stream, relative_path, start_offset, byte_length, created_at_utc)
+                VALUES ($segmentId, $jobId, $stream, $relativePath, $startOffset, $byteLength, $createdAtUtc);
+                """;
+            command.Parameters.AddWithValue("$segmentId", segmentId);
+            command.Parameters.AddWithValue("$jobId", segment.JobId);
+            command.Parameters.AddWithValue("$stream", segment.Stream.ToString());
+            command.Parameters.AddWithValue("$relativePath", relativePath);
+            command.Parameters.AddWithValue("$startOffset", segment.StartOffset);
+            command.Parameters.AddWithValue("$byteLength", segment.ByteLength);
+            command.Parameters.AddWithValue("$createdAtUtc", segment.CreatedAtUtc.ToString("O"));
+            await command.ExecuteNonQueryAsync(cancellationToken);
+
+            return new OutputSegmentInfo(
+                segmentId,
+                segment.JobId,
+                segment.Stream,
+                relativePath,
+                segment.StartOffset,
+                segment.ByteLength,
+                segment.CreatedAtUtc);
+        }
+        finally
+        {
+            outputMutationGate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<OutputSegmentInfo>> RegisterTaskHostOutputSegmentsAsync(
+        string jobId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateTaskHostJobId(jobId);
+        var jobDirectory = GetSegmentPath(Path.Combine("segments", jobId));
+        if (!Directory.Exists(jobDirectory))
+        {
+            return Array.Empty<OutputSegmentInfo>();
+        }
+
+        var registered = new List<OutputSegmentInfo>();
+        foreach (var stream in Enum.GetValues<JobOutputKind>())
+        {
+            var streamDirectory = Path.Combine(jobDirectory, GetTaskHostStreamDirectory(stream));
+            if (!Directory.Exists(streamDirectory))
+            {
+                continue;
+            }
+
+            foreach (var fullPath in Directory.EnumerateFiles(streamDirectory, "*.seg", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TryParseTaskHostSegmentOffset(Path.GetFileName(fullPath), out var startOffset))
+                {
+                    continue;
+                }
+
+                var file = new FileInfo(fullPath);
+                registered.Add(await RegisterOutputSegmentAsync(
+                    new TaskOutputSegment(
+                        jobId,
+                        stream,
+                        Path.GetRelativePath(DataRoot, fullPath),
+                        startOffset,
+                        file.Length,
+                        file.CreationTimeUtc),
+                    cancellationToken));
+            }
+        }
+
+        return registered
+            .OrderBy(segment => segment.Stream)
+            .ThenBy(segment => segment.StartOffset)
+            .ThenBy(segment => segment.SegmentId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    public async Task<IReadOnlyList<OutputSegmentInfo>> ListOutputSegmentsAsync(
+        string jobId,
+        JobOutputKind? stream = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
+        if (stream is { } value && !Enum.IsDefined(value))
+        {
+            throw new ArgumentOutOfRangeException(nameof(stream));
+        }
+
+        var segments = new List<OutputSegmentInfo>();
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = stream is null
+            ? """
+                SELECT segment_id, stream, relative_path, start_offset, byte_length, created_at_utc
+                FROM output_segments
+                WHERE job_id = $jobId
+                ORDER BY CASE stream
+                    WHEN 'Stdout' THEN 0
+                    WHEN 'Stderr' THEN 1
+                    ELSE 2
+                END, start_offset, created_at_utc, segment_id;
+                """
+            : """
+                SELECT segment_id, stream, relative_path, start_offset, byte_length, created_at_utc
+                FROM output_segments
+                WHERE job_id = $jobId AND stream = $stream
+                ORDER BY start_offset, created_at_utc, segment_id;
+                """;
+        command.Parameters.AddWithValue("$jobId", jobId);
+        if (stream is { } requestedStream)
+        {
+            command.Parameters.AddWithValue("$stream", requestedStream.ToString());
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            segments.Add(new OutputSegmentInfo(
+                reader.GetString(0),
+                jobId,
+                Enum.Parse<JobOutputKind>(reader.GetString(1), ignoreCase: false),
+                reader.GetString(2),
+                reader.GetInt64(3),
+                reader.GetInt64(4),
+                DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture)));
+        }
+
+        return segments;
+    }
     public async Task<LogQuotaResult> EnforceLogQuotaAsync(long quotaBytes, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(quotaBytes);
@@ -162,6 +335,72 @@ public sealed partial class AgentStateStore
         return segments;
     }
 
+    private async Task<OutputSegmentInfo?> GetOutputSegmentByRelativePathAsync(
+        string relativePath,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT segment_id, job_id, stream, start_offset, byte_length, created_at_utc
+            FROM output_segments
+            WHERE relative_path = $relativePath;
+            """;
+        command.Parameters.AddWithValue("$relativePath", relativePath);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new OutputSegmentInfo(
+            reader.GetString(0),
+            reader.GetString(1),
+            Enum.Parse<JobOutputKind>(reader.GetString(2), ignoreCase: false),
+            relativePath,
+            reader.GetInt64(3),
+            reader.GetInt64(4),
+            DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static bool TryParseTaskHostSegmentOffset(string fileName, out long startOffset)
+    {
+        startOffset = default;
+        return fileName.Length > 25 &&
+               fileName.EndsWith(".seg", StringComparison.OrdinalIgnoreCase) &&
+               fileName[20] == '-' &&
+               long.TryParse(
+                   fileName.AsSpan(0, 20),
+                   System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture,
+                   out startOffset);
+    }
+
+    private static string GetTaskHostStreamDirectory(JobOutputKind stream) => stream switch
+    {
+        JobOutputKind.Stdout => "stdout",
+        JobOutputKind.Stderr => "stderr",
+        _ => throw new ArgumentOutOfRangeException(nameof(stream)),
+    };
+
+    private static void ValidateTaskHostJobId(string jobId)
+    {
+        if (string.IsNullOrWhiteSpace(jobId) ||
+            jobId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            jobId.Contains(Path.DirectorySeparatorChar) ||
+            jobId.Contains(Path.AltDirectorySeparatorChar))
+        {
+            throw new ArgumentException("Job ID is not valid for a task-host output segment path.", nameof(jobId));
+        }
+    }
+
+    private string NormalizeSegmentRelativePath(string relativePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+        var fullPath = GetSegmentPath(normalized);
+        return Path.GetRelativePath(DataRoot, fullPath);
+    }
     private async Task<IReadOnlyList<string>> GetCompletedJobIdsWithOutputAsync(CancellationToken cancellationToken)
     {
         var jobIds = new List<string>();
