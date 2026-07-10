@@ -49,6 +49,27 @@ public sealed class ExecutionAccountSecret
     public DateTimeOffset UpdatedAtUtc { get; }
 }
 
+public sealed class PairedController
+{
+    private readonly byte[] certificate;
+
+    public PairedController(string controllerId, byte[] certificate, DateTimeOffset pairedAtUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(controllerId);
+        ArgumentNullException.ThrowIfNull(certificate);
+
+        ControllerId = controllerId;
+        this.certificate = certificate.ToArray();
+        PairedAtUtc = pairedAtUtc;
+    }
+
+    public string ControllerId { get; }
+
+    public byte[] Certificate => certificate.ToArray();
+
+    public DateTimeOffset PairedAtUtc { get; }
+}
+
 public sealed partial class AgentStateStore
 {
     public async Task SaveDeviceIdentityAsync(DeviceIdentity identity, CancellationToken cancellationToken = default)
@@ -144,5 +165,82 @@ public sealed partial class AgentStateStore
             reader.GetString(0),
             protector.Unprotect(reader.GetFieldValue<byte[]>(1)),
             DateTimeOffset.Parse(reader.GetString(2), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    public async Task SavePairedControllerAsync(PairedController pairedController, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(pairedController);
+        var protector = new DpapiSecretProtector();
+        var protectedCertificate = protector.Protect(pairedController.Certificate);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO paired_controller (id, controller_id, certificate_protected, paired_at_utc)
+            VALUES (1, $controllerId, $certificateProtected, $pairedAtUtc)
+            ON CONFLICT(id) DO UPDATE SET
+                controller_id = excluded.controller_id,
+                certificate_protected = excluded.certificate_protected,
+                paired_at_utc = excluded.paired_at_utc;
+            """;
+        command.Parameters.AddWithValue("$controllerId", pairedController.ControllerId);
+        command.Parameters.AddWithValue("$certificateProtected", protectedCertificate);
+        command.Parameters.AddWithValue("$pairedAtUtc", pairedController.PairedAtUtc.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Stores the first paired controller without ever replacing an existing pin.
+    /// This is the persistence boundary enforcing the single-controller policy.
+    /// </summary>
+    public async Task<bool> TrySavePairedControllerIfNoneAsync(
+        PairedController pairedController,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(pairedController);
+        var protector = new DpapiSecretProtector();
+        var protectedCertificate = protector.Protect(pairedController.Certificate);
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO paired_controller (id, controller_id, certificate_protected, paired_at_utc)
+            VALUES (1, $controllerId, $certificateProtected, $pairedAtUtc)
+            ON CONFLICT(id) DO NOTHING;
+            """;
+        command.Parameters.AddWithValue("$controllerId", pairedController.ControllerId);
+        command.Parameters.AddWithValue("$certificateProtected", protectedCertificate);
+        command.Parameters.AddWithValue("$pairedAtUtc", pairedController.PairedAtUtc.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<PairedController?> GetPairedControllerAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT controller_id, certificate_protected, paired_at_utc
+            FROM paired_controller
+            WHERE id = 1;
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var protector = new DpapiSecretProtector();
+        return new PairedController(
+            reader.GetString(0),
+            protector.Unprotect(reader.GetFieldValue<byte[]>(1)),
+            DateTimeOffset.Parse(reader.GetString(2), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    public async Task RemovePairedControllerAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM paired_controller WHERE id = 1;";
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
