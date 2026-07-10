@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Collections.ObjectModel;
 
 namespace Rc.Contracts;
 
@@ -13,7 +14,7 @@ public sealed record ShellLaunch(ShellKind Kind, string Command);
 public sealed class ExecRequest
 {
     private readonly IReadOnlyList<string>? directArgv;
-    private readonly IReadOnlyDictionary<string, string>? environment;
+    private readonly ReadOnlyDictionary<string, string>? environment;
 
     [JsonConstructor]
     public ExecRequest(
@@ -37,7 +38,7 @@ public sealed class ExecRequest
         WorkingDirectory = workingDirectory;
         this.environment = environment is null
             ? null
-            : new Dictionary<string, string>(environment, StringComparer.Ordinal);
+            : new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(environment, StringComparer.Ordinal));
     }
 
     [JsonPropertyName("directArgv")]

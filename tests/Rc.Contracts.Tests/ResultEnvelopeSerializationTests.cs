@@ -23,4 +23,27 @@ public sealed class ResultEnvelopeSerializationTests
         Assert.Equal("{\"ok\":false,\"error\":{\"code\":\"unavailable\",\"message\":\"agent is offline\",\"retryable\":true}}", json);
         Assert.DoesNotContain("result", json, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void FailureOfValueTypeSerializesWithoutResult()
+    {
+        var error = new RemoteError(ErrorCode.InvalidRequest, "invalid", false);
+
+        var json = JsonSerializer.Serialize(Result.Failure<int>(error), ContractJson.Options);
+
+        Assert.Equal("{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid\",\"retryable\":false}}", json);
+        Assert.DoesNotContain("result", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FailureOfValueTypeDeserializesWithoutResult()
+    {
+        const string json = "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid\",\"retryable\":false}}";
+
+        var envelope = JsonSerializer.Deserialize<ResultEnvelope<int>>(json, ContractJson.Options);
+
+        Assert.NotNull(envelope);
+        Assert.False(envelope!.Ok);
+        Assert.Equal(json, JsonSerializer.Serialize(envelope, ContractJson.Options));
+    }
 }

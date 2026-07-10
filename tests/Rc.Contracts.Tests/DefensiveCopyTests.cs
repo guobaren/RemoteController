@@ -20,6 +20,21 @@ public sealed class DefensiveCopyTests
     }
 
     [Fact]
+    public void ExecRequestEnvironmentCannotBeMutatedThroughADowncast()
+    {
+        var request = ExecRequest.ForDirectArgv(
+            ["tool.exe"],
+            environment: new Dictionary<string, string> { ["MODE"] = "safe" });
+        var mutableEnvironment = Assert.IsAssignableFrom<IDictionary<string, string>>(request.Environment);
+
+        var json = JsonSerializer.Serialize(request, ContractJson.Options);
+
+        Assert.Throws<NotSupportedException>(() => mutableEnvironment["MODE"] = "changed");
+        Assert.Contains("safe", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("changed", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PairingDtosRetainCertificateBytesAfterSourceArraysChange()
     {
         var requestBytes = new byte[] { 1, 2 };
