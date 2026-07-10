@@ -1,6 +1,6 @@
 # RemoteController 当前进度
 
-更新时间：2026-07-10
+更新时间：2026-07-11
 
 ## 目标
 
@@ -16,8 +16,9 @@
 | `5539f6c` | 支持标准输入、标准输出分段的持久化交互任务 `Rc.TaskHost` |
 | `7090feb` | 任务契约与 TaskHost 恢复基础 |
 | `c77d92f` | Agent 数据目录安全初始化与 ACL 验证 |
+| `d80e4c3` | 已签名的单次远程命令执行 |
 
-## 本次新增能力
+## 已完成的控制能力
 
 已完成最小配对与单次命令执行控制面：
 
@@ -51,25 +52,39 @@
 
 配对命令开始后，Agent 只会在本机控制台显示一次性码；该码不会写入 UDP 广播或 TLS 响应。`IP:端口 + TLS 指纹 + 一次性码` 因而可作为发现广播不可用时的备用流程。
 
+## 2026-07-11 持久化任务的启动与状态查询
+
+已在既有的 `Rc.TaskHost` 与 SQLite 任务快照基础上接入最小长期任务控制面：
+
+- `rcctl job start <IP:端口> --fingerprint <SHA256> --command <命令> [--shell powershell|cmd] [--workdir <路径>] [--text]`：以当前 Agent 用户身份异步启动任务，命令立即返回任务 ID、PID 和初始状态，不等待远端进程结束。
+- `rcctl job status <IP:端口> --fingerprint <SHA256> --job <任务ID> [--text]`：运行中任务经 TaskHost 的 named pipe 刷新实时状态；完成后的任务从 SQLite 读取持久化快照。`--text` 显示 PID、退出码、stdout/stderr 累计字节数和最近输出时间。
+- `rcctl job list <IP:端口> --fingerprint <SHA256> [--state <JobState>] [--text]`：列出已持久化任务快照，可按状态过滤。
+- 每个 job 操作独立使用 ECDSA P-256 请求签名，并加入 `job_start`、`job_status`、`job_list` 专用域分隔，签名无法跨操作复用。
+- Agent 进程不恢复此前仍在运行的 TaskHost；重启后只能读取已落盘的终态/快照。任务启动、状态刷新和完成保存均已通过单元测试验证。
+
+控制端必须继续使用配对时相同的 `RC_CONTROLLER_DATA_ROOT`，以便读取 DPAPI 保护的控制端私钥。长期任务的真实 TLS 回环尚未完成：本轮在受限 Codex 沙箱下尝试回环时，Windows Schannel 客户端报“安全包中没有可用的凭证”，TLS 尚未到达 Agent 证书校验，因此该结果不能用于判断 Agent 或配对协议。此前在普通已登录 Windows 用户会话的自动配对中，输入一次性码后复现过 J-PAKE 对端载荷校验失败；CLI 与 Agent 已加入不泄露秘密的轮次阶段诊断，待在具备 Schannel 凭据的交互会话中复测。J-PAKE 载荷 JSON 往返与任务运行中状态刷新、终态持久化读取均已由单元测试覆盖；在该配对回归修复前，不将 `job` 标为已完成网络端到端验证。
+
 ## 验证结果
 
 - `dotnet build .\Rc.RemoteController.sln -p:NuGetAudit=false -v minimal`：通过，0 warnings / 0 errors。
 - `dotnet test .\tests\Rc.Agent.Tests\Rc.Agent.Tests.csproj -p:NuGetAudit=false --filter "FullyQualifiedName~AgentCertificateManagerTests|FullyQualifiedName~PairingCoordinatorTests|FullyQualifiedName~JpakePairingSessionTests" -v minimal`：8 通过。
 - `git diff --check`：通过（仅有 Git 的既有 LF/CRLF 提示）。
+- `dotnet test .\Rc.RemoteController.sln -p:NuGetAudit=false -v minimal`：159 项测试全部通过。
 - 已在普通已登录 Windows 用户会话完成 TLS 回环配对与单次命令执行：命令的 stdout、stderr 和退出码 `7` 均正确返回。
 
 ## 仍未接通的用户功能
 
 - 复用连接的控制端认证会话（当前采用 TLS 指纹固定信任 + 每请求 ECDSA 签名认证）；
-- `rcctl job start/status/logs/input/wait/cancel` 的持久化远程 RPC 接入；
-- 并发远程任务列表、实时日志进度和多次 stdin 输入；
+- `rcctl job logs/input/wait/cancel` 的持久化远程 RPC 接入（`start/status/list` 已完成）；
+- 实时日志进度、多个 stdin 输入和取消/等待控制；
 - 文件读写、分块传输、默认 200 MB 限制及可配置限额；
 - 登录会话内可选 GUI 自动化；
 - UAC Broker、服务安装、开机自启、防火墙配置与卸载/修复。
 
 ## 下一里程碑
 
-基于已验证的签名认证控制通道，接入持久化任务 RPC，优先实现 `job start`、`job status`、`job logs`、`job input`、`job cancel` 和 `job wait`，以支持多个长期任务与实时进度。
+以当前 `job start/status/list` 为基础，接入 `job logs`、`job input`、`job close-input`、`job cancel` 和 `job wait`，然后补充任务并发配额、重启恢复语义与文件传输。
+
 ## 2026-07-10 本机回环验证
 
 已在普通已登录 Windows 用户会话中完成真实 TLS 回环验证（不依赖受限 Codex 沙箱的 Schannel）：

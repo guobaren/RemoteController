@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using Rc.Agent.Jobs;
 using Rc.Agent.Persistence;
 using Rc.Agent.Security;
 using Rc.Contracts;
@@ -27,6 +28,7 @@ public sealed class TlsControlListener : IAsyncDisposable
     private readonly PairingCoordinator pairingCoordinator;
     private readonly CancellationTokenSource shutdown = new();
     private readonly SemaphoreSlim executeOnceGate = new(1, 1);
+    private readonly ManagedTaskRegistry taskRegistry;
     private bool started;
 
     public TlsControlListener(
@@ -46,6 +48,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         this.identity = identity;
         this.stateStore = stateStore;
         this.pairingCoordinator = pairingCoordinator;
+        taskRegistry = new ManagedTaskRegistry(stateStore);
         listener = new TcpListener(IPAddress.Any, port);
     }
 
@@ -217,8 +220,19 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        pairingCoordinator.ReceiveControllerRound1(request.PairingId, request.ControllerRound1);
-        await WriteSuccessAsync(writer, new ControlPairRound2Response(pairingCoordinator.CreateAgentRound2(request.PairingId)));
+        try
+        {
+            pairingCoordinator.ReceiveControllerRound1(request.PairingId, request.ControllerRound1);
+            await WriteSuccessAsync(writer, new ControlPairRound2Response(pairingCoordinator.CreateAgentRound2(request.PairingId)));
+        }
+        catch (CryptographicException exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, $"Pairing validation failed while receiving controller round 1: {exception.Message}");
+        }
+        catch (InvalidOperationException exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, $"Pairing protocol state was invalid for controller round 1: {exception.Message}");
+        }
     }
 
     private async Task HandlePairRound2Async(JsonElement root, StreamWriter writer)
@@ -230,8 +244,19 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        pairingCoordinator.ReceiveControllerRound2(request.PairingId, request.ControllerRound2);
-        await WriteSuccessAsync(writer, new ControlPairRound3Response(pairingCoordinator.CreateAgentRound3(request.PairingId)));
+        try
+        {
+            pairingCoordinator.ReceiveControllerRound2(request.PairingId, request.ControllerRound2);
+            await WriteSuccessAsync(writer, new ControlPairRound3Response(pairingCoordinator.CreateAgentRound3(request.PairingId)));
+        }
+        catch (CryptographicException exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, $"Pairing validation failed while receiving controller round 2: {exception.Message}");
+        }
+        catch (InvalidOperationException exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, $"Pairing protocol state was invalid for controller round 2: {exception.Message}");
+        }
     }
 
     private async Task HandlePairCompleteAsync(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
@@ -243,12 +268,23 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        pairingCoordinator.ReceiveControllerRound3(request.PairingId, request.ControllerRound3);
-        var paired = await pairingCoordinator.CompleteAsync(
-            request.PairingId,
-            new PairingCompletionProof(request.ConfirmationMac, request.CertificateSignature),
-            cancellationToken);
-        await WriteSuccessAsync(writer, new ControlPairCompleteResponse(paired.ControllerId, paired.PairedAtUtc));
+        try
+        {
+            pairingCoordinator.ReceiveControllerRound3(request.PairingId, request.ControllerRound3);
+            var paired = await pairingCoordinator.CompleteAsync(
+                request.PairingId,
+                new PairingCompletionProof(request.ConfirmationMac, request.CertificateSignature),
+                cancellationToken);
+            await WriteSuccessAsync(writer, new ControlPairCompleteResponse(paired.ControllerId, paired.PairedAtUtc));
+        }
+        catch (CryptographicException exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, $"Pairing validation failed while receiving controller round 3: {exception.Message}");
+        }
+        catch (InvalidOperationException exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, $"Pairing protocol state was invalid for controller round 3: {exception.Message}");
+        }
     }
 
     private async Task HandleExecuteOnceAsync(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
@@ -349,6 +385,167 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
     }
 
+    private async Task HandleJobStartAsync(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlJobStartRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The job start request protocol version is unsupported.");
+            return;
+        }
+
+        if (request.Execution.ExecutionIdentity != ExecutionIdentity.CurrentUser)
+        {
+            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, "Only current-user execution is supported by job_start.");
+            return;
+        }
+
+        if (!await VerifyPairedControllerRequestAsync(
+                request.ControllerId,
+                request.Signature,
+                key => ControlRequestAuthentication.VerifyJobStart(identity.DeviceId, request.ControllerId, request.Execution, request.Signature, key),
+                writer,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            var status = await taskRegistry.StartAsync(request.Execution, cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, new ControlJobStartResponse(status));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Internal, $"The job could not be started: {exception.Message}");
+        }
+    }
+
+    private async Task HandleJobStatusAsync(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlJobStatusRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || string.IsNullOrWhiteSpace(request.JobId))
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The job status request is invalid.");
+            return;
+        }
+
+        if (!await VerifyPairedControllerRequestAsync(
+                request.ControllerId,
+                request.Signature,
+                key => ControlRequestAuthentication.VerifyJobStatus(identity.DeviceId, request.ControllerId, request.JobId, request.Signature, key),
+                writer,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await taskRegistry.GetStatusAsync(request.JobId, cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, new ControlJobStatusResponse(result.Status, result.IsActive));
+        }
+        catch (KeyNotFoundException)
+        {
+            await WriteFailureAsync(writer, ErrorCode.NotFound, $"No job exists with ID '{request.JobId}'.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Internal, $"The job status could not be read: {exception.Message}");
+        }
+    }
+
+    private async Task HandleJobListAsync(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlJobListRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || (request.State is { } state && !Enum.IsDefined(state)))
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The job list request is invalid.");
+            return;
+        }
+
+        if (!await VerifyPairedControllerRequestAsync(
+                request.ControllerId,
+                request.Signature,
+                key => ControlRequestAuthentication.VerifyJobList(identity.DeviceId, request.ControllerId, request.State, request.Signature, key),
+                writer,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            var jobs = await taskRegistry.ListAsync(request.State, cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, new ControlJobListResponse(jobs));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Internal, $"The job list could not be read: {exception.Message}");
+        }
+    }
+
+    private async Task<bool> VerifyPairedControllerRequestAsync(
+        string controllerId,
+        byte[] signature,
+        Func<ECDsa, bool> verifySignature,
+        StreamWriter writer,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(controllerId) || signature is null || signature.Length == 0)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "A controller identity and signature are required.");
+            return false;
+        }
+
+        var pairedController = await stateStore.GetPairedControllerAsync(cancellationToken).ConfigureAwait(false);
+        if (pairedController is null)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "Pair a controller before making job requests.");
+            return false;
+        }
+
+        if (!string.Equals(pairedController.ControllerId, controllerId, StringComparison.Ordinal))
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unauthorized, "The request controller identity does not match the paired controller.");
+            return false;
+        }
+
+        var certificateBytes = pairedController.Certificate;
+        try
+        {
+            using var certificate = new X509Certificate2(certificateBytes);
+            using var publicKey = certificate.GetECDsaPublicKey();
+            if (publicKey is null || !verifySignature(publicKey))
+            {
+                await WriteFailureAsync(writer, ErrorCode.Unauthorized, "The paired controller signature is invalid.");
+                return false;
+            }
+
+            return true;
+        }
+        catch (CryptographicException)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Internal, "The paired controller certificate cannot validate job requests.");
+            return false;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(certificateBytes);
+        }
+    }
     private async Task<byte[]> ReadOutputAsync(string jobId, JobOutputKind stream, CancellationToken cancellationToken)
     {
         var streamDirectory = Path.Combine(
@@ -405,12 +602,12 @@ public sealed class TlsControlListener : IAsyncDisposable
         writer.WriteLineAsync(JsonSerializer.Serialize(
             Result.Failure<object>(new RemoteError(code, message, Retryable: false)), ContractJson.Options));
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         shutdown.Cancel();
         listener.Stop();
+        await taskRegistry.DisposeAsync().ConfigureAwait(false);
         shutdown.Dispose();
         executeOnceGate.Dispose();
-        return ValueTask.CompletedTask;
     }
 }

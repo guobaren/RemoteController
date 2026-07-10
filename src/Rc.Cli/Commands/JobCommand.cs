@@ -1,0 +1,362 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Rc.Cli.Security;
+using Rc.Contracts;
+
+namespace Rc.Cli.Commands;
+
+/// <summary>CLI surface for non-blocking TaskHost jobs.</summary>
+public static class JobCommand
+{
+    private const int MaximumLineLength = 1024 * 1024;
+
+    public static Task<int> RunAsync(string[] args, TextWriter output, TextWriter error) =>
+        args.Length == 0
+            ? WriteUsageAsync(error)
+            : args[0] switch
+            {
+                "start" => StartAsync(args[1..], output, error),
+                "status" => StatusAsync(args[1..], output, error),
+                "list" => ListAsync(args[1..], output, error),
+                _ => WriteUsageAsync(error),
+            };
+
+    private static async Task<int> StartAsync(string[] args, TextWriter output, TextWriter error)
+    {
+        if (!TryParseStart(args, out var endpoint, out var fingerprint, out var execution, out var text, out var argumentError))
+        {
+            await error.WriteLineAsync(argumentError);
+            return 2;
+        }
+
+        try
+        {
+            var hello = await SendAsync<ControlHelloResponse>(endpoint!, fingerprint!, new ControlHelloRequest(1));
+            using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName);
+            using var privateKey = identity.GetPrivateKey();
+            var signature = ControlRequestAuthentication.SignJobStart(hello.DeviceId, identity.ControllerId, execution!, privateKey);
+            try
+            {
+                var response = await SendAsync<ControlJobStartResponse>(endpoint!, fingerprint!, new ControlJobStartRequest(1, identity.ControllerId, execution!, signature));
+                if (text)
+                {
+                    await WriteRuntimeStatusAsync(output, response.Status, "started");
+                }
+                else
+                {
+                    await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
+                }
+
+                return response.Status.Job.State == JobState.FailedToStart ? 1 : 0;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(signature);
+            }
+        }
+        catch (Exception exception) when (IsExpectedConnectionException(exception))
+        {
+            await error.WriteLineAsync(ToUserMessage(exception));
+            return 1;
+        }
+    }
+
+    private static async Task<int> StatusAsync(string[] args, TextWriter output, TextWriter error)
+    {
+        if (!TryParseStatus(args, out var endpoint, out var fingerprint, out var jobId, out var text, out var argumentError))
+        {
+            await error.WriteLineAsync(argumentError);
+            return 2;
+        }
+
+        try
+        {
+            var hello = await SendAsync<ControlHelloResponse>(endpoint!, fingerprint!, new ControlHelloRequest(1));
+            using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName);
+            using var privateKey = identity.GetPrivateKey();
+            var signature = ControlRequestAuthentication.SignJobStatus(hello.DeviceId, identity.ControllerId, jobId!, privateKey);
+            try
+            {
+                var response = await SendAsync<ControlJobStatusResponse>(endpoint!, fingerprint!, new ControlJobStatusRequest(1, identity.ControllerId, jobId!, signature));
+                if (text)
+                {
+                    await WriteRuntimeStatusAsync(output, response.Status, response.IsActive ? "active" : "stored");
+                }
+                else
+                {
+                    await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
+                }
+
+                return 0;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(signature);
+            }
+        }
+        catch (Exception exception) when (IsExpectedConnectionException(exception))
+        {
+            await error.WriteLineAsync(ToUserMessage(exception));
+            return 1;
+        }
+    }
+
+    private static async Task<int> ListAsync(string[] args, TextWriter output, TextWriter error)
+    {
+        if (!TryParseList(args, out var endpoint, out var fingerprint, out var state, out var text, out var argumentError))
+        {
+            await error.WriteLineAsync(argumentError);
+            return 2;
+        }
+
+        try
+        {
+            var hello = await SendAsync<ControlHelloResponse>(endpoint!, fingerprint!, new ControlHelloRequest(1));
+            using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName);
+            using var privateKey = identity.GetPrivateKey();
+            var signature = ControlRequestAuthentication.SignJobList(hello.DeviceId, identity.ControllerId, state, privateKey);
+            try
+            {
+                var response = await SendAsync<ControlJobListResponse>(endpoint!, fingerprint!, new ControlJobListRequest(1, identity.ControllerId, state, signature));
+                if (text)
+                {
+                    foreach (var job in response.Jobs)
+                    {
+                        await output.WriteLineAsync($"{job.JobId} state={job.State} exitCode={job.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "n/a"} created={job.CreatedAtUtc:O}");
+                    }
+                }
+                else
+                {
+                    await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
+                }
+
+                return 0;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(signature);
+            }
+        }
+        catch (Exception exception) when (IsExpectedConnectionException(exception))
+        {
+            await error.WriteLineAsync(ToUserMessage(exception));
+            return 1;
+        }
+    }
+
+    private static async Task WriteRuntimeStatusAsync(TextWriter output, TaskRuntimeStatus status, string source)
+    {
+        var job = status.Job;
+        await output.WriteLineAsync($"[rcctl] jobId={job.JobId} state={job.State} exitCode={job.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "n/a"} source={source}");
+        await output.WriteLineAsync($"[rcctl] pid={status.ProcessId?.ToString(CultureInfo.InvariantCulture) ?? "n/a"} stdoutBytes={status.StdoutLength} stderrBytes={status.StderrLength} lastOutput={status.LastOutputAtUtc?.ToString("O") ?? "n/a"}");
+        if (job.Error is not null)
+        {
+            await output.WriteLineAsync($"[rcctl] error={job.Error.Code}: {job.Error.Message}");
+        }
+    }
+
+    private static async Task<TResponse> SendAsync<TResponse>(IPEndPoint endpoint, string fingerprint, object request)
+    {
+        await using var connection = await PinnedTlsConnection.ConnectAsync(endpoint, fingerprint);
+        var tls = connection.Stream;
+        await using var writer = new StreamWriter(tls, new UTF8Encoding(false), MaximumLineLength, leaveOpen: true) { AutoFlush = true };
+        using var reader = new StreamReader(tls, new UTF8Encoding(false), false, MaximumLineLength, leaveOpen: true);
+        await writer.WriteLineAsync(JsonSerializer.Serialize(request, ContractJson.Options));
+        var line = await reader.ReadLineAsync();
+        var response = line is null ? null : JsonSerializer.Deserialize<ResultEnvelope<TResponse>>(line, ContractJson.Options);
+        if (response is not { Ok: true, Result: not null })
+        {
+            throw new InvalidOperationException(response?.Error?.Message ?? "The agent did not return a valid response.");
+        }
+
+        return response.Result;
+    }
+
+    private static bool TryParseStart(string[] args, out IPEndPoint? endpoint, out string? fingerprint, out ExecRequest? execution, out bool text, out string? error)
+    {
+        endpoint = null;
+        fingerprint = null;
+        execution = null;
+        text = false;
+        error = null;
+        if (!TryParseEndpoint(args, out endpoint))
+        {
+            error = Usage();
+            return false;
+        }
+
+        var shell = ShellKind.PowerShell;
+        string? command = null;
+        string? workingDirectory = null;
+        for (var index = 1; index < args.Length; index++)
+        {
+            switch (args[index])
+            {
+                case "--fingerprint" when index + 1 < args.Length:
+                    fingerprint = NormalizeFingerprint(args[++index]);
+                    break;
+                case "--shell" when index + 1 < args.Length:
+                    if (!Enum.TryParse<ShellKind>(args[++index], true, out shell))
+                    {
+                        error = "--shell must be powershell or cmd.";
+                        return false;
+                    }
+                    break;
+                case "--command" when index + 1 < args.Length:
+                    command = args[++index];
+                    break;
+                case "--workdir" when index + 1 < args.Length:
+                    workingDirectory = args[++index];
+                    break;
+                case "--text":
+                    text = true;
+                    break;
+                default:
+                    error = Usage();
+                    return false;
+            }
+        }
+
+        if (fingerprint is null || string.IsNullOrWhiteSpace(command))
+        {
+            error = fingerprint is null ? "A SHA-256 TLS fingerprint is required for job commands." : "--command is required.";
+            return false;
+        }
+
+        try
+        {
+            execution = ExecRequest.ForShell(shell, command, workingDirectory);
+            return true;
+        }
+        catch (ArgumentException exception)
+        {
+            error = exception.Message;
+            return false;
+        }
+    }
+
+    private static bool TryParseStatus(string[] args, out IPEndPoint? endpoint, out string? fingerprint, out string? jobId, out bool text, out string? error)
+    {
+        endpoint = null;
+        fingerprint = null;
+        jobId = null;
+        text = false;
+        error = null;
+        if (!TryParseEndpoint(args, out endpoint))
+        {
+            error = Usage();
+            return false;
+        }
+
+        for (var index = 1; index < args.Length; index++)
+        {
+            switch (args[index])
+            {
+                case "--fingerprint" when index + 1 < args.Length:
+                    fingerprint = NormalizeFingerprint(args[++index]);
+                    break;
+                case "--job" when index + 1 < args.Length:
+                    jobId = args[++index];
+                    break;
+                case "--text":
+                    text = true;
+                    break;
+                default:
+                    error = Usage();
+                    return false;
+            }
+        }
+
+        if (fingerprint is null || string.IsNullOrWhiteSpace(jobId))
+        {
+            error = fingerprint is null ? "A SHA-256 TLS fingerprint is required for job commands." : "--job is required.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseList(string[] args, out IPEndPoint? endpoint, out string? fingerprint, out JobState? state, out bool text, out string? error)
+    {
+        endpoint = null;
+        fingerprint = null;
+        state = null;
+        text = false;
+        error = null;
+        if (!TryParseEndpoint(args, out endpoint))
+        {
+            error = Usage();
+            return false;
+        }
+
+        for (var index = 1; index < args.Length; index++)
+        {
+            switch (args[index])
+            {
+                case "--fingerprint" when index + 1 < args.Length:
+                    fingerprint = NormalizeFingerprint(args[++index]);
+                    break;
+                case "--state" when index + 1 < args.Length:
+                    if (!Enum.TryParse<JobState>(args[++index], true, out var parsedState))
+                    {
+                        error = "--state must be Queued, Running, Exited, FailedToStart, Cancelled, or InterruptedByReboot.";
+                        return false;
+                    }
+                    state = parsedState;
+                    break;
+                case "--text":
+                    text = true;
+                    break;
+                default:
+                    error = Usage();
+                    return false;
+            }
+        }
+
+        if (fingerprint is null)
+        {
+            error = "A SHA-256 TLS fingerprint is required for job commands.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseEndpoint(string[] args, out IPEndPoint? endpoint)
+    {
+        endpoint = null;
+        return args.Length > 0 && IPEndPoint.TryParse(args[0], out endpoint);
+    }
+
+    private static bool IsExpectedConnectionException(Exception exception) =>
+        exception is AuthenticationException or SocketException or InvalidOperationException or CryptographicException;
+
+    private static string ToUserMessage(Exception exception) => exception switch
+    {
+        AuthenticationException authentication => $"TLS authentication failed: {authentication.Message}",
+        SocketException socket => $"Unable to connect: {socket.Message}",
+        CryptographicException cryptographic => $"Controller identity failed: {cryptographic.Message}",
+        _ => $"Command was rejected: {exception.Message}",
+    };
+
+    private static Task<int> WriteUsageAsync(TextWriter error)
+    {
+        error.WriteLine(Usage());
+        return Task.FromResult(2);
+    }
+
+    private static string Usage() =>
+        "Usage: rcctl job start <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--text] | rcctl job status <IP:port> --fingerprint <SHA256> --job <jobId> [--text] | rcctl job list <IP:port> --fingerprint <SHA256> [--state <JobState>] [--text]";
+
+    private static string? NormalizeFingerprint(string value)
+    {
+        var normalized = value.Replace(":", string.Empty, StringComparison.Ordinal).Trim();
+        return normalized.Length == 64 && normalized.All(Uri.IsHexDigit) ? normalized.ToUpperInvariant() : null;
+    }
+}

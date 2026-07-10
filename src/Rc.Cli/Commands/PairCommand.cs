@@ -45,17 +45,17 @@ public static class PairCommand
                     oneTimeCode,
                     transcriptHash);
                 var controllerRound1 = pairing.CreateRound1();
-                pairing.ReceiveRound1(start.AgentRound1);
+                ReceivePeerPayload("agent round 1", () => pairing.ReceiveRound1(start.AgentRound1));
 
                 var round2 = await SendAsync<ControlPairRound2Response>(
                     endpoint!, fingerprint!, new ControlPairRound1Request(start.Binding.PairingId, controllerRound1));
                 var controllerRound2 = pairing.CreateRound2();
-                pairing.ReceiveRound2(round2.AgentRound2);
+                ReceivePeerPayload("agent round 2", () => pairing.ReceiveRound2(round2.AgentRound2));
 
                 var round3 = await SendAsync<ControlPairRound3Response>(
                     endpoint!, fingerprint!, new ControlPairRound2Request(start.Binding.PairingId, controllerRound2));
                 var controllerRound3 = pairing.CreateRound3();
-                pairing.ReceiveRound3(round3.AgentRound3);
+                ReceivePeerPayload("agent round 3", () => pairing.ReceiveRound3(round3.AgentRound3));
 
                 using var result = pairing.GetResult();
                 using var privateKey = identity.GetPrivateKey();
@@ -121,6 +121,22 @@ public static class PairCommand
         {
             await error.WriteLineAsync($"Pairing failed: {exception.Message}");
             return 1;
+        }
+    }
+
+    private static void ReceivePeerPayload(string stage, Action receive)
+    {
+        try
+        {
+            receive();
+        }
+        catch (CryptographicException exception)
+        {
+            throw new CryptographicException($"Pairing validation failed while receiving {stage}: {exception.Message}", exception);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InvalidOperationException($"Pairing protocol state was invalid while receiving {stage}: {exception.Message}", exception);
         }
     }
 

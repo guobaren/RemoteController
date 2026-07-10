@@ -25,6 +25,9 @@ public static class ControlMessageKinds
     public const string PairRound2 = "pair_round2";
     public const string PairComplete = "pair_complete";
     public const string ExecOnce = "exec_once";
+    public const string JobStart = "job_start";
+    public const string JobStatus = "job_status";
+    public const string JobList = "job_list";
 }
 
 public sealed record ControlPairStartRequest(
@@ -100,3 +103,38 @@ public sealed record ControlExecuteOnceResponse(
     bool StandardOutputTruncated,
     byte[] StandardError,
     bool StandardErrorTruncated);
+/// <summary>Starts a task without waiting for it to finish.</summary>
+public sealed record ControlJobStartRequest(
+    int ProtocolVersion,
+    string ControllerId,
+    ExecRequest Execution,
+    byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobStart;
+}
+
+public sealed record ControlJobStartResponse(TaskRuntimeStatus Status);
+
+/// <summary>Reads the current in-memory status when available, or the persisted terminal snapshot.</summary>
+public sealed record ControlJobStatusRequest(
+    int ProtocolVersion,
+    string ControllerId,
+    string JobId,
+    byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobStatus;
+}
+
+public sealed record ControlJobStatusResponse(TaskRuntimeStatus Status, bool IsActive);
+
+/// <summary>Lists durable job snapshots. Active jobs are refreshed before the list is returned.</summary>
+public sealed record ControlJobListRequest(
+    int ProtocolVersion,
+    string ControllerId,
+    JobState? State,
+    byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobList;
+}
+
+public sealed record ControlJobListResponse(IReadOnlyList<JobSnapshot> Jobs);
