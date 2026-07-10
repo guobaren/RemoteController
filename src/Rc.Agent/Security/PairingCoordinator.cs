@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -56,6 +57,29 @@ public sealed class PairingEndpoint
     public int Port { get; }
 
     internal byte[] CanonicalAddressBytes => addressBytes.ToArray();
+
+    /// <summary>
+    /// Parses the manual pairing fallback address. Host names are intentionally not
+    /// accepted because pairing transcripts bind to a concrete IP endpoint.
+    /// </summary>
+    public static bool TryParse(string? value, [NotNullWhen(true)] out PairingEndpoint? endpoint)
+    {
+        endpoint = null;
+        if (string.IsNullOrWhiteSpace(value) || !IPEndPoint.TryParse(value, out var parsed))
+        {
+            return false;
+        }
+
+        try
+        {
+            endpoint = new PairingEndpoint(parsed.Address, parsed.Port);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
 }
 
 /// <summary>
