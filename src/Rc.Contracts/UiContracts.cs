@@ -20,12 +20,32 @@ public sealed record WindowSnapshot(
     int Height,
     bool IsVisible);
 
-public sealed record UiSessionSnapshot(
-    int SessionId,
-    string? UserName,
-    bool IsActive,
-    IReadOnlyList<DisplaySnapshot> Displays,
-    IReadOnlyList<WindowSnapshot> Windows);
+public sealed class UiSessionSnapshot
+{
+    public UiSessionSnapshot(
+        int sessionId,
+        string? userName,
+        bool isActive,
+        IReadOnlyList<DisplaySnapshot> displays,
+        IReadOnlyList<WindowSnapshot> windows)
+    {
+        SessionId = sessionId;
+        UserName = userName;
+        IsActive = isActive;
+        Displays = Array.AsReadOnly(displays.ToArray());
+        Windows = Array.AsReadOnly(windows.ToArray());
+    }
+
+    public int SessionId { get; }
+
+    public string? UserName { get; }
+
+    public bool IsActive { get; }
+
+    public IReadOnlyList<DisplaySnapshot> Displays { get; }
+
+    public IReadOnlyList<WindowSnapshot> Windows { get; }
+}
 
 public sealed record UiSnapshotRequest(bool IncludeWindows);
 

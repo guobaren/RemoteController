@@ -1,6 +1,17 @@
 namespace Rc.Contracts;
 
-public sealed record FileManifest(string RootPath, IReadOnlyList<FileManifestEntry> Entries);
+public sealed class FileManifest
+{
+    public FileManifest(string rootPath, IReadOnlyList<FileManifestEntry> entries)
+    {
+        RootPath = rootPath;
+        Entries = Array.AsReadOnly(entries.ToArray());
+    }
+
+    public string RootPath { get; }
+
+    public IReadOnlyList<FileManifestEntry> Entries { get; }
+}
 
 public sealed record FileManifestEntry(
     string RelativePath,
@@ -14,8 +25,8 @@ public sealed record FileManifestResponse(FileManifest Manifest);
 
 public sealed record FileReadRequest(string Path, long Offset, int Length);
 
-public sealed record FileReadResponse(ByteChunk Chunk);
+public sealed record FileReadResponse(FileChunk Chunk);
 
-public sealed record FileWriteRequest(string Path, ByteChunk Chunk, bool Overwrite);
+public sealed record FileWriteRequest(string Path, FileChunk Chunk, bool Overwrite);
 
 public sealed record FileWriteResponse(long BytesWritten);

@@ -14,13 +14,16 @@ public sealed class ExecRequestSerializationTests
 
         Assert.NotNull(requestType);
 
+        var directFactory = requestType!.GetMethod("ForDirectArgv", BindingFlags.Public | BindingFlags.Static);
+        Assert.NotNull(directFactory);
+
         var argv = new[] { "tool.exe", "--display-name", "two words" };
-        var request = Activator.CreateInstance(requestType!, [argv, null, null]);
+        var request = directFactory!.Invoke(null, [argv, null, null]);
         var json = JsonSerializer.Serialize(request, requestType!, ContractJson.Options);
         var roundTripped = JsonSerializer.Deserialize(json, requestType!, ContractJson.Options);
-        var returnedArgv = (string[]?)requestType!.GetProperty("Argv")?.GetValue(roundTripped);
+        var returnedArgv = (IReadOnlyList<string>?)requestType.GetProperty("DirectArgv")?.GetValue(roundTripped);
 
-        Assert.Equal("{\"argv\":[\"tool.exe\",\"--display-name\",\"two words\"],\"workingDirectory\":null,\"environment\":null}", json);
+        Assert.Equal("{\"directArgv\":[\"tool.exe\",\"--display-name\",\"two words\"],\"workingDirectory\":null,\"environment\":null}", json);
         Assert.Equal(argv, returnedArgv);
         Assert.DoesNotContain("tool.exe --display-name two words", json, StringComparison.Ordinal);
     }

@@ -1,6 +1,79 @@
 namespace Rc.Contracts;
 
-public sealed record ByteChunk(string JobId, string Stream, long Offset, byte[] Data, bool IsFinal);
+public enum JobOutputKind
+{
+    Stdout,
+    Stderr,
+}
+
+public sealed class ByteChunk
+{
+    private readonly byte[] data;
+
+    public ByteChunk(string jobId, JobOutputKind stream, long offset, byte[] data, bool isFinal)
+    {
+        JobId = jobId;
+        Stream = stream;
+        Offset = offset;
+        this.data = data.ToArray();
+        IsFinal = isFinal;
+    }
+
+    public string JobId { get; }
+
+    public JobOutputKind Stream { get; }
+
+    public long Offset { get; }
+
+    public byte[] Data => data.ToArray();
+
+    public bool IsFinal { get; }
+}
+
+public sealed class FileChunk
+{
+    private readonly byte[] data;
+
+    public FileChunk(string transferSessionId, string relativePath, long offset, byte[] data, bool isFinal)
+    {
+        TransferSessionId = transferSessionId;
+        RelativePath = relativePath;
+        Offset = offset;
+        this.data = data.ToArray();
+        IsFinal = isFinal;
+    }
+
+    public string TransferSessionId { get; }
+
+    public string RelativePath { get; }
+
+    public long Offset { get; }
+
+    public byte[] Data => data.ToArray();
+
+    public bool IsFinal { get; }
+}
+
+public sealed class TransferChunk
+{
+    private readonly byte[] data;
+
+    public TransferChunk(string transferSessionId, long offset, byte[] data, bool isFinal)
+    {
+        TransferSessionId = transferSessionId;
+        Offset = offset;
+        this.data = data.ToArray();
+        IsFinal = isFinal;
+    }
+
+    public string TransferSessionId { get; }
+
+    public long Offset { get; }
+
+    public byte[] Data => data.ToArray();
+
+    public bool IsFinal { get; }
+}
 
 public enum JobState
 {
