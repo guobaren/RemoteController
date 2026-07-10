@@ -24,6 +24,7 @@ public static class ControlMessageKinds
     public const string PairRound1 = "pair_round1";
     public const string PairRound2 = "pair_round2";
     public const string PairComplete = "pair_complete";
+    public const string ExecOnce = "exec_once";
 }
 
 public sealed record ControlPairStartRequest(
@@ -74,3 +75,28 @@ public sealed record ControlPairRound2Response(PairingPakeRound2 AgentRound2);
 public sealed record ControlPairRound3Response(PairingPakeRound3 AgentRound3);
 
 public sealed record ControlPairCompleteResponse(string ControllerId, DateTimeOffset PairedAtUtc);
+/// <summary>
+/// A one-shot command request made by the paired controller. The request is signed
+/// with the paired controller certificate so a TLS connection alone never grants
+/// process-launch authority.
+/// </summary>
+public sealed record ControlExecuteOnceRequest(
+    int ProtocolVersion,
+    string ControllerId,
+    ExecRequest Execution,
+    byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.ExecOnce;
+}
+
+/// <summary>
+/// The terminal result of a one-shot command. Output is bounded per stream; when
+/// a stream exceeds the response limit its complete data remains in Agent storage
+/// for the later job-log protocol.
+/// </summary>
+public sealed record ControlExecuteOnceResponse(
+    JobSnapshot Job,
+    byte[] StandardOutput,
+    bool StandardOutputTruncated,
+    byte[] StandardError,
+    bool StandardErrorTruncated);

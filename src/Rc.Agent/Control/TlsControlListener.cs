@@ -2,12 +2,14 @@ using System.Net;
 using System.Net.Sockets;
 using System.Net.Security;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Rc.Agent.Persistence;
 using Rc.Agent.Security;
 using Rc.Contracts;
+using Rc.TaskHost;
 
 namespace Rc.Agent.Control;
 
@@ -17,12 +19,14 @@ namespace Rc.Agent.Control;
 /// </summary>
 public sealed class TlsControlListener : IAsyncDisposable
 {
-    private const int MaximumLineLength = 16 * 1024;
+    private const int MaximumLineLength = 1024 * 1024;
+    private const int MaximumReturnedOutputBytesPerStream = 256 * 1024;
     private readonly TcpListener listener;
     private readonly AgentTlsIdentity identity;
     private readonly AgentStateStore stateStore;
     private readonly PairingCoordinator pairingCoordinator;
     private readonly CancellationTokenSource shutdown = new();
+    private readonly SemaphoreSlim executeOnceGate = new(1, 1);
     private bool started;
 
     public TlsControlListener(
@@ -136,6 +140,9 @@ public sealed class TlsControlListener : IAsyncDisposable
                     case ControlMessageKinds.PairComplete:
                         await HandlePairCompleteAsync(document.RootElement, writer, cancellationToken);
                         break;
+                    case ControlMessageKinds.ExecOnce:
+                        await HandleExecuteOnceAsync(document.RootElement, writer, cancellationToken);
+                        break;
                     default:
                         await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The control request kind is not supported.");
                         break;
@@ -244,6 +251,142 @@ public sealed class TlsControlListener : IAsyncDisposable
         await WriteSuccessAsync(writer, new ControlPairCompleteResponse(paired.ControllerId, paired.PairedAtUtc));
     }
 
+    private async Task HandleExecuteOnceAsync(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlExecuteOnceRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The exec request protocol version is unsupported.");
+            return;
+        }
+
+        if (request.Execution.ExecutionIdentity != ExecutionIdentity.CurrentUser)
+        {
+            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, "Only current-user execution is supported by exec_once.");
+            return;
+        }
+
+        var pairedController = await stateStore.GetPairedControllerAsync(cancellationToken);
+        if (pairedController is null)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "Pair a controller before executing commands.");
+            return;
+        }
+
+        if (!string.Equals(pairedController.ControllerId, request.ControllerId, StringComparison.Ordinal))
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unauthorized, "The request controller identity does not match the paired controller.");
+            return;
+        }
+
+        var certificateBytes = pairedController.Certificate;
+        try
+        {
+            using var certificate = new X509Certificate2(certificateBytes);
+            using var publicKey = certificate.GetECDsaPublicKey();
+            if (publicKey is null || !ControlRequestAuthentication.VerifyExecuteOnce(
+                    identity.DeviceId,
+                    request.ControllerId,
+                    request.Execution,
+                    request.Signature,
+                    publicKey))
+            {
+                await WriteFailureAsync(writer, ErrorCode.Unauthorized, "The paired controller signature is invalid.");
+                return;
+            }
+        }
+        catch (CryptographicException)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Internal, "The paired controller certificate cannot validate execution requests.");
+            return;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(certificateBytes);
+        }
+
+        if (!await executeOnceGate.WaitAsync(0, cancellationToken))
+        {
+            await WriteFailureAsync(writer, ErrorCode.ResourceExhausted, "Another exec_once command is still running.");
+            return;
+        }
+
+        try
+        {
+            var jobId = "exec-" + Guid.NewGuid().ToString("N");
+            var launch = new TaskLaunchRequest(
+                jobId,
+                request.Execution,
+                ExecutionIdentity.CurrentUser,
+                stateStore.DataRoot,
+                "rc-exec-" + Guid.NewGuid().ToString("N"),
+                TimeSpan.FromSeconds(5));
+            await using var runner = new TaskHostRunner(launch);
+            var status = await runner.RunAsync(cancellationToken);
+            await stateStore.SaveJobSnapshotAsync(status.Job, cancellationToken);
+            await stateStore.RegisterTaskHostOutputSegmentsAsync(jobId, cancellationToken);
+
+            var standardOutput = await ReadOutputAsync(jobId, JobOutputKind.Stdout, cancellationToken);
+            var standardError = await ReadOutputAsync(jobId, JobOutputKind.Stderr, cancellationToken);
+            await WriteSuccessAsync(writer, new ControlExecuteOnceResponse(
+                status.Job,
+                standardOutput,
+                status.StdoutLength > standardOutput.Length,
+                standardError,
+                status.StderrLength > standardError.Length));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Internal, $"The command could not be executed: {exception.Message}");
+        }
+        finally
+        {
+            executeOnceGate.Release();
+        }
+    }
+
+    private async Task<byte[]> ReadOutputAsync(string jobId, JobOutputKind stream, CancellationToken cancellationToken)
+    {
+        var streamDirectory = Path.Combine(
+            stateStore.DataRoot,
+            "segments",
+            jobId,
+            stream == JobOutputKind.Stdout ? "stdout" : "stderr");
+        if (!Directory.Exists(streamDirectory))
+        {
+            return [];
+        }
+
+        await using var collected = new MemoryStream();
+        foreach (var path in Directory.EnumerateFiles(streamDirectory, "*.seg").OrderBy(path => path, StringComparer.Ordinal))
+        {
+            var remaining = MaximumReturnedOutputBytesPerStream - checked((int)collected.Length);
+            if (remaining <= 0)
+            {
+                break;
+            }
+
+            await using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, useAsync: true);
+            var buffer = new byte[Math.Min(16 * 1024, remaining)];
+            while (remaining > 0)
+            {
+                var read = await source.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                await collected.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                remaining -= read;
+            }
+        }
+
+        return collected.ToArray();
+    }
     private static ControlPairingBinding ToContract(PairingBinding binding) => new(
         binding.PairingId,
         binding.AgentDeviceId,
@@ -267,6 +410,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         shutdown.Cancel();
         listener.Stop();
         shutdown.Dispose();
+        executeOnceGate.Dispose();
         return ValueTask.CompletedTask;
     }
 }
