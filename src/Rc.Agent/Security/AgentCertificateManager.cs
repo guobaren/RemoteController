@@ -98,8 +98,27 @@ public sealed class AgentCertificateManager
                 throw new CryptographicException("The persisted agent certificate does not contain a P-256 public key.");
             }
 
-            var certificateWithPrivateKey = certificate.CopyWithPrivateKey(privateKey);
-            return new AgentTlsIdentity(persistedIdentity.DeviceId, certificateWithPrivateKey, persistedIdentity.CreatedAtUtc);
+            // Schannel cannot use the ephemeral CNG key produced by CopyWithPrivateKey
+            // directly for an ECDSA TLS server certificate. Round-trip through a PFX and
+            // import it into the current user's persisted key store before giving it to
+            // SslStream. The PFX only exists in memory; the durable source of truth stays
+            // DPAPI-protected in AgentStateStore.
+            using var certificateWithPrivateKey = certificate.CopyWithPrivateKey(privateKey);
+            var pkcs12 = certificateWithPrivateKey.Export(X509ContentType.Pkcs12);
+            try
+            {
+                var tlsCertificate = new X509Certificate2(
+                    pkcs12,
+                    string.Empty,
+                    X509KeyStorageFlags.UserKeySet |
+                    X509KeyStorageFlags.PersistKeySet |
+                    X509KeyStorageFlags.Exportable);
+                return new AgentTlsIdentity(persistedIdentity.DeviceId, tlsCertificate, persistedIdentity.CreatedAtUtc);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(pkcs12);
+            }
         }
         catch (CryptographicException exception)
         {

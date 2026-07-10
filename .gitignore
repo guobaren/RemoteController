@@ -10,3 +10,5 @@ TestResults/
 *.db-wal
 artifacts/
 .worktrees/
+.idea/
+.test-*/

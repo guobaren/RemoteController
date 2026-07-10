@@ -4,56 +4,74 @@
 
 ## 目标
 
-面向 Windows 10/11 局域网的单控制端远程控制工具。控制端将通过命令行让被控端执行命令、管理长时间任务、读取日志并向交互任务写入标准输入；后续再扩展文件传输、GUI 自动化和特权执行。
+面向 Windows 10/11 局域网的单控制端远程控制工具。控制端最终将能让 AI agent 在另一台 Windows 电脑上执行命令、管理并发且可交互的长任务、读取日志、写入标准输入，并传输文件；GUI 自动化、提权 Broker 与服务化将在后续接入。
 
-## 已完成并已提交
+## 已提交能力
 
 | 提交 | 能力 |
 | --- | --- |
-| 3b2c3ea | 持久化 Agent 状态、日志配额与受保护密钥存储基础。 |
-| 0316064 | 单控制端配对领域模型与本地配对协调基础。 |
-| 534bddf | UDP 组播局域网设备发现及 rcctl discover。 |
-| 5539f6c | 可接收标准输入、输出分段的持久交互式 Rc.TaskHost。 |
-| 7090feb | 持久任务契约与 TaskHost 恢复基础。 |
+| `3b2c3ea` | Agent 状态持久化、日志配额与受保护秘密存储 |
+| `0316064` | 单控制端配对领域模型与本地配对协调器 |
+| `534bddf` | UDP 组播局域网发现与 `rcctl discover` |
+| `5539f6c` | 支持标准输入、标准输出分段的持久化交互任务 `Rc.TaskHost` |
+| `7090feb` | 任务契约与 TaskHost 恢复基础 |
+| `c77d92f` | Agent 数据目录安全初始化与 ACL 验证 |
 
-## 当前未提交改动
+## 当前未提交能力
 
-首次启动时，Agent 数据目录现在由安全初始化器创建：目录 ACL 仅允许当前 Agent 账户、SYSTEM 和 Administrators 写入。已存在但 ACL 不安全的目录仍会被拒绝，不会静默放宽权限。
+已完成最小配对控制面，尚未接入远程任务命令：
 
-同时修复了两项问题：
-
-- ACL 位掩码此前会将未知主体的只读权限误判成写权限；
-- AgentStateStore 曾在安全检查前按继承 ACL 创建目录，导致首次启动必然失败。
-
-## 已验证
-
-- dotnet test tests\Rc.Agent.Tests\Rc.Agent.Tests.csproj -p:NuGetAudit=false --filter "FullyQualifiedName~AgentDataDirectoryAclValidatorTests"：6 项通过。
-- dotnet build Rc.RemoteController.sln -p:NuGetAudit=false -v minimal：0 warnings / 0 errors。
-- 真实本机验证：Agent 在全新 ProgramData 子目录创建安全 ACL 后启动，控制端通过 rcctl discover --timeout-ms 4000 --text 成功收到 UDP 广播。
-- 本地 TaskHost 验证：交互式 PowerShell 测试脚本可输出日志、接收标准输入并正常退出。
+- Agent 在 TCP 上提供 TLS 单请求 JSON 控制端点：`hello`、`pair_start`、`pair_round1`、`pair_round2`、`pair_complete`。
+- `rcctl probe <IP:port> --fingerprint <SHA256>` 可读取公开设备 ID、TLS 指纹和“是否已配对”状态。
+- `rcctl pair <IP:port> --fingerprint <SHA256>` 会在 Agent 本机控制台显示一次性配对码；控制端输入该码后，使用三轮 J-PAKE 和控制端 ECDSA 证书确认完成配对。
+- 控制端身份保存为 P-256 ECDSA 证书；PFX 用当前用户 DPAPI 加密后写入 `%LOCALAPPDATA%\RemoteController\controller-identity.dpapi`。可用 `RC_CONTROLLER_DATA_ROOT` 替换目录，用于隔离测试。
+- TLS 采用 Agent 公布的 SHA-256 DER 证书指纹固定信任，不接受系统信任链或名称匹配替代。
+- Agent 只允许一个已配对控制端。完成配对后，新的 `pair_start` 将被拒绝，直到未来增加显式取消配对命令。
+- Agent 数据根目录默认是 `C:\ProgramData\RemoteController`，也可通过 `RC_AGENT_DATA_ROOT` 指定其他目录。新目录会被设置为仅当前 Agent 账户、SYSTEM 和 Administrators 可写；已有目录 ACL 不安全时会拒绝启动。
 
 ## 当前可使用的命令
 
-~~~powershell
-# 被控端：持续运行并广播自身
+```powershell
+# 被控端：持续运行、发布 UDP 发现信息，并监听 TLS 控制端口。
+# 默认端口为 43001；也可设置 RC_AGENT_TCP_PORT。
 .\src\Rc.Agent\bin\Debug\net8.0-windows\Rc.Agent.exe
 
-# 控制端：发现同一局域网的 Agent
-.\src\Rc.Cli\bin\Debug\net8.0\Rc.Cli.exe discover --timeout-ms 4000 --text
-~~~
+# 控制端：发现局域网 Agent。
+.\src\Rc.Cli\bin\Debug\net8.0-windows\Rc.Cli.exe discover --timeout-ms 4000 --text
 
-可通过 RC_AGENT_DATA_ROOT 指定状态目录；默认是 C:\ProgramData\RemoteController。新目录会被安全初始化；已有 ACL 不安全的目录会被拒绝。
+# 控制端：手动地址 + 发现/现场获得的 TLS 指纹，探测公开状态。
+.\src\Rc.Cli\bin\Debug\net8.0-windows\Rc.Cli.exe probe 192.168.1.50:43001 --fingerprint <64位SHA256指纹> --text
 
-## 尚未接通的用户功能
+# 控制端：发起配对。Agent 控制台会出现一次性码；将其输入当前 CLI。
+.\src\Rc.Cli\bin\Debug\net8.0-windows\Rc.Cli.exe pair 192.168.1.50:43001 --fingerprint <64位SHA256指纹> --name MyController --text
+```
 
-发现结果目前只是设备元数据，尚未建立网络控制会话。以下命令仍未实现：
+配对命令开始后，Agent 只会在本机控制台显示一次性码；该码不会写入 UDP 广播或 TLS 响应。`IP:端口 + TLS 指纹 + 一次性码` 因而可作为发现广播不可用时的备用流程。
 
-- rcctl pair：TLS 连接、一次性配对码、唯一控制端证书固定；
-- rcctl job start/status/logs/input/wait/cancel：通过网络控制 TaskHost；
-- fs 与 copy：远程文件读写、分块传输与断点续传；
-- ui：仅登录会话可用的 GUI 自动化；
-- 特权 Broker、服务安装、开机自启、防火墙配置与卸载/修复。
+## 验证结果
+
+- `dotnet build .\Rc.RemoteController.sln -p:NuGetAudit=false -v minimal`：通过，0 warnings / 0 errors。
+- `dotnet test .\tests\Rc.Agent.Tests\Rc.Agent.Tests.csproj -p:NuGetAudit=false --filter "FullyQualifiedName~AgentCertificateManagerTests|FullyQualifiedName~PairingCoordinatorTests|FullyQualifiedName~JpakePairingSessionTests" -v minimal`：8 通过。
+- `git diff --check`：通过（仅有 Git 的既有 LF/CRLF 提示）。
+- 本会话能够启动 Agent 并获取其 TCP 端口与指纹，但当前 Codex 受限 Windows 身份的 Schannel 客户端在发送 ClientHello 前即返回 `SEC_E_NO_CREDENTIALS (0x8009030E)`；`curl.exe` 也有同样结果。因此，真实 TLS 回环配对必须在普通已登录 Windows 用户会话中复验，不能把该沙箱限制误判为配对协议失败。
+
+## 仍未接通的用户功能
+
+- 配对后的 mTLS/控制端证书认证会话；
+- `rcctl job start/status/logs/input/wait/cancel` 的远程 RPC 接入；
+- 并发远程任务列表、实时日志进度和多次 stdin 输入；
+- 文件读写、分块传输、默认 200 MB 限制及可配置限额；
+- 登录会话内可选 GUI 自动化；
+- UAC Broker、服务安装、开机自启、防火墙配置与卸载/修复。
 
 ## 下一里程碑
 
-实现 Agent 的 TLS 控制监听服务和 rcctl pair：控制端发现或手工输入 IP:端口 后连接 Agent，被控端本机显示一次性配对码，配对成功后仅保存一个控制端证书。随后接入 job start、日志流、任务状态、stdin 与取消任务，形成最小可用远程命令执行链路。
+在普通 Windows 用户会话完成真实的 `probe -> pair -> probe (paired: True)` 回环验证，随后把已配对控制端的证书认证接入任务 RPC，优先实现 `job start`、`job status`、`job logs`、`job input`、`job cancel` 和 `job wait`。
+## 2026-07-10 本机回环验证
+
+已在普通已登录 Windows 用户会话中完成真实 TLS 回环验证（不依赖受限 Codex 沙箱的 Schannel）：
+
+- Agent 显示一次性配对码，控制端输入后完成三轮 J-PAKE 与控制端 ECDSA 证书确认。
+- `rcctl probe ... --text` 在配对后显示 `paired: True`。
+- 重启同一 Agent 数据目录后，TLS 指纹保持不变，`probe` 仍显示 `paired: True`。
+- 修复了两个实际运行问题：Agent ECDSA TLS 私钥需要导入当前用户的持久化密钥存储供 Schannel 使用；CLI 必须在每轮先创建本方 J-PAKE 载荷、再接收对端载荷。

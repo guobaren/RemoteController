@@ -1,3 +1,4 @@
+using Rc.Agent.Control;
 using Rc.Agent.Discovery;
 using Rc.Agent.Persistence;
 using Rc.Agent.Security;
@@ -17,10 +18,16 @@ var tcpPort = ReadTcpPort();
 
 await using var stateStore = new AgentStateStore(dataRoot);
 await stateStore.InitializeAsync(cancellation.Token);
-using var identity = await new AgentCertificateManager(stateStore).GetOrCreateAsync(cancellation.Token);
+var certificateManager = new AgentCertificateManager(stateStore);
+using var identity = await certificateManager.GetOrCreateAsync(cancellation.Token);
+using var pairingCoordinator = new PairingCoordinator(stateStore, certificateManager);
 await using var discoveryPublisher = new LanDiscoveryPublisher();
+await using var controlListener = new TlsControlListener(identity, stateStore, pairingCoordinator, tcpPort);
+controlListener.Start();
+var controlListenerTask = controlListener.RunAsync(cancellation.Token);
 
-Console.WriteLine($"rc-agent {identity.DeviceId} is advertising LAN discovery on TCP port {tcpPort}.");
+Console.WriteLine($"rc-agent {identity.DeviceId} is advertising LAN discovery and TLS control on TCP port {tcpPort}.");
+Console.WriteLine($"TLS certificate SHA-256: {identity.CertificateSha256Fingerprint}");
 try
 {
     await discoveryPublisher.RunAsync(
@@ -34,6 +41,11 @@ try
 }
 catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
 {
+}
+finally
+{
+    cancellation.Cancel();
+    await controlListenerTask;
 }
 
 static int ReadTcpPort()
