@@ -18,6 +18,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.Contracts.Tests", "tests
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.Agent.Tests", "tests\Rc.Agent.Tests\Rc.Agent.Tests.csproj", "{D56B1E87-16D7-4C8A-AD51-29D9C7960E98}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.TaskHost.Tests", "tests\Rc.TaskHost.Tests\Rc.TaskHost.Tests.csproj", "{6D1C137C-0901-4399-991B-3AE2B8689C2A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -56,6 +58,10 @@ Global
 		{D56B1E87-16D7-4C8A-AD51-29D9C7960E98}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D56B1E87-16D7-4C8A-AD51-29D9C7960E98}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D56B1E87-16D7-4C8A-AD51-29D9C7960E98}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6D1C137C-0901-4399-991B-3AE2B8689C2A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6D1C137C-0901-4399-991B-3AE2B8689C2A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6D1C137C-0901-4399-991B-3AE2B8689C2A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6D1C137C-0901-4399-991B-3AE2B8689C2A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

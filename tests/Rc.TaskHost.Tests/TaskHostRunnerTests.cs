@@ -1,0 +1,205 @@
+using System.Text;
+using Rc.Contracts;
+using Rc.TaskHost;
+using Xunit;
+
+namespace Rc.TaskHost.Tests;
+
+public sealed class TaskHostRunnerTests
+{
+    [Fact]
+    public async Task DirectArgvCapturesRawStdoutAndStderrAtTheirOwnOffsets()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForDirectArgv(
+            ["cmd.exe", "/d", "/c", "echo hello & echo warning 1>&2"]));
+
+        var status = await runner.RunAsync();
+
+        Assert.Equal(JobState.Exited, status.Job.State);
+        Assert.Equal(0, status.Job.ExitCode);
+        Assert.Equal("hello \r\n", await fixture.ReadOutputAsync("stdout"));
+        Assert.Equal("warning \r\n", await fixture.ReadOutputAsync("stderr"));
+        Assert.Equal(0, await fixture.FirstOffsetAsync("stdout"));
+        Assert.Equal(0, await fixture.FirstOffsetAsync("stderr"));
+        Assert.Equal(status.StdoutLength, Encoding.UTF8.GetByteCount("hello \r\n"));
+    }
+
+    [Fact]
+    public async Task PowerShellShellModeRunsWithoutStringJoining()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(ShellKind.PowerShell, "[Console]::Out.Write('shell works')"));
+
+        var status = await runner.RunAsync();
+
+        Assert.Equal(JobState.Exited, status.Job.State);
+        Assert.Equal("shell works", await fixture.ReadOutputAsync("stdout"));
+    }
+
+    [Fact]
+    public async Task OutputSegmentsUseContiguousOffsetsWhenOutputExceedsOneBuffer()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(
+            ShellKind.PowerShell,
+            "[Console]::Out.Write(('x' * 40000))"));
+
+        var status = await runner.RunAsync();
+        var segments = await fixture.SegmentsAsync("stdout");
+
+        Assert.Equal(JobState.Exited, status.Job.State);
+        Assert.True(segments.Count >= 2);
+        Assert.Equal(0, segments[0].Offset);
+        Assert.Equal(40000, segments.Sum(segment => segment.Length));
+        Assert.Equal(40000, status.StdoutLength);
+        Assert.Equal(segments.Sum(segment => segment.Length), segments[^1].Offset + segments[^1].Length);
+        Assert.All(segments.Skip(1).Zip(segments), pair => Assert.Equal(pair.Second.Offset + pair.Second.Length, pair.First.Offset));
+    }
+
+    [Fact]
+    public async Task NamedPipeAcceptsTwoStandardInputWritesThenEof()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(
+            ShellKind.PowerShell,
+            "$first = [Console]::In.ReadLine(); $second = [Console]::In.ReadLine(); [Console]::Out.Write($first + '-' + $second)"));
+        var completion = runner.RunAsync();
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.StandardInput, Encoding.UTF8.GetBytes("one\n")));
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.StandardInput, Encoding.UTF8.GetBytes("two\n")));
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.CloseStandardInput));
+        var status = await completion;
+
+        Assert.Equal(JobState.Exited, status.Job.State);
+        Assert.Equal("one-two", await fixture.ReadOutputAsync("stdout"));
+    }
+
+    [Fact]
+    public async Task RejectedControlCommandDoesNotChangeTheTaskResultOrStopStatusQueries()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(
+            ShellKind.PowerShell,
+            "Start-Sleep -Milliseconds 500"));
+        var completion = runner.RunAsync();
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.CloseStandardInput));
+        var rejected = await fixture.SendAsync(new TaskControlMessage(
+            TaskControlKind.StandardInput,
+            Encoding.UTF8.GetBytes("late input")));
+        var running = await fixture.SendAsync(new TaskControlMessage(TaskControlKind.GetStatus));
+        var final = await completion;
+
+        Assert.NotNull(rejected.Error);
+        Assert.Equal(ErrorCode.FailedPrecondition, rejected.Error!.Code);
+        Assert.Equal(JobState.Running, running.Status.Job.State);
+        Assert.Null(running.Error);
+        Assert.Equal(JobState.Exited, final.Job.State);
+        Assert.Null(final.Job.Error);
+    }
+
+    [Fact]
+    public async Task StatusReportsRunningProcessAndCancellationTerminatesTreeAfterGracePeriod()
+    {
+        await using var fixture = new TaskHostFixture(cancellationGracePeriod: TimeSpan.FromMilliseconds(100));
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(ShellKind.PowerShell, "Start-Sleep -Seconds 30"));
+        var completion = runner.RunAsync();
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var running = await fixture.SendAsync(new TaskControlMessage(TaskControlKind.GetStatus));
+        Assert.Equal(JobState.Running, running.Status.Job.State);
+        Assert.NotNull(running.Status.ProcessId);
+
+        var cancelled = await fixture.SendAsync(new TaskControlMessage(TaskControlKind.Cancel));
+        var final = await completion;
+
+        Assert.Equal(JobState.Cancelled, cancelled.Status.Job.State);
+        Assert.Equal(JobState.Cancelled, final.Job.State);
+    }
+
+    [Fact]
+    public async Task FailedStartProducesDurableFailureStatus()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForDirectArgv(["does-not-exist-rc.exe"]));
+
+        var status = await runner.RunAsync();
+
+        Assert.Equal(JobState.FailedToStart, status.Job.State);
+        Assert.NotNull(status.Job.Error);
+        Assert.Equal(ErrorCode.Internal, status.Job.Error!.Code);
+    }
+
+    private sealed class TaskHostFixture : IAsyncDisposable
+    {
+        private readonly string dataRoot = Path.Combine(Path.GetTempPath(), "rc-taskhost-tests", Guid.NewGuid().ToString("N"));
+        private readonly string pipeName = "rc-taskhost-test-" + Guid.NewGuid().ToString("N");
+        private readonly TimeSpan cancellationGracePeriod;
+        private readonly string jobId = "job-" + Guid.NewGuid().ToString("N");
+
+        public TaskHostFixture(TimeSpan? cancellationGracePeriod = null)
+        {
+            this.cancellationGracePeriod = cancellationGracePeriod ?? TimeSpan.FromSeconds(1);
+        }
+
+        public TaskHostRunner CreateRunner(ExecRequest execution) => new(new TaskLaunchRequest(
+            jobId,
+            execution,
+            ExecutionIdentity.CurrentUser,
+            dataRoot,
+            pipeName,
+            cancellationGracePeriod));
+
+        public Task<TaskControlResponse> SendAsync(TaskControlMessage message) =>
+            TaskHostControlClient.SendAsync(pipeName, message, TimeSpan.FromSeconds(5));
+
+        public async Task<string> ReadOutputAsync(string stream)
+        {
+            var directory = Path.Combine(dataRoot, "segments", jobId, stream);
+            if (!Directory.Exists(directory))
+            {
+                return string.Empty;
+            }
+
+            var output = new MemoryStream();
+            foreach (var file in Directory.GetFiles(directory, "*.seg").OrderBy(Path.GetFileName, StringComparer.Ordinal))
+            {
+                await output.WriteAsync(await File.ReadAllBytesAsync(file));
+            }
+
+            return Encoding.UTF8.GetString(output.ToArray());
+        }
+
+        public Task<long> FirstOffsetAsync(string stream)
+        {
+            var directory = Path.Combine(dataRoot, "segments", jobId, stream);
+            var file = Directory.GetFiles(directory, "*.seg").OrderBy(Path.GetFileName, StringComparer.Ordinal).First();
+            return Task.FromResult(long.Parse(Path.GetFileName(file).Split('-', 2)[0], System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        public Task<IReadOnlyList<(long Offset, long Length)>> SegmentsAsync(string stream)
+        {
+            var directory = Path.Combine(dataRoot, "segments", jobId, stream);
+            IReadOnlyList<(long Offset, long Length)> segments = Directory.GetFiles(directory, "*.seg")
+                .Select(file => (
+                    long.Parse(Path.GetFileName(file).Split('-', 2)[0], System.Globalization.CultureInfo.InvariantCulture),
+                    new FileInfo(file).Length))
+                .OrderBy(segment => segment.Item1)
+                .ToArray();
+            return Task.FromResult(segments);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            if (Directory.Exists(dataRoot))
+            {
+                Directory.Delete(dataRoot, recursive: true);
+            }
+
+            return ValueTask.CompletedTask;
+        }
+    }
+}
