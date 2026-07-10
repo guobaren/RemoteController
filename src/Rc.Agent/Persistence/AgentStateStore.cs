@@ -28,7 +28,6 @@ public sealed partial class AgentStateStore : IAsyncDisposable
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        Directory.CreateDirectory(DataRoot);
         AgentDataDirectoryAclValidator.EnsureSafe(DataRoot);
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
