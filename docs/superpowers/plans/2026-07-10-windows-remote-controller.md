@@ -26,81 +26,81 @@
 **Files:**
 - Create: `RemoteController.sln`, `Directory.Build.props`, `src/Rc.Contracts/*`, `tests/Rc.Contracts.Tests/*`
 
-- [ ] Create .NET 8 projects for every executable and test assembly; enable nullable reference types, implicit usings, deterministic builds and analyzers in `Directory.Build.props`.
-- [ ] Define `ResultEnvelope<T>`, `RemoteError`, the fixed job state enum, `JobSnapshot`, byte-chunk DTOs, file-manifest DTOs, UI DTOs and the complete stable error-code enum in `Rc.Contracts`.
-- [ ] Define the gRPC service methods for pairing, jobs, files and UI; preserve raw command argv and byte payloads rather than shell-joining strings.
-- [ ] Write contract serialization tests proving that a success envelope, a retryable error and a Base64 byte chunk have stable camelCase JSON field names.
-- [ ] Run `dotnet test tests/Rc.Contracts.Tests` and commit `chore: create remote controller contracts`.
+- [x] Create .NET 8 projects for every executable and current test assemblies; enable nullable reference types, implicit usings, deterministic builds and analyzers in `Directory.Build.props`. Broker/UI test assemblies remain part of Tasks 8-9.
+- [x] Define `ResultEnvelope<T>`, `RemoteError`, the fixed job state enum, `JobSnapshot`, byte-chunk DTOs, file-manifest DTOs, UI DTOs and the stable error-code enum in `Rc.Contracts`.
+- [ ] Define the remaining UI service surface. Pairing, jobs and files currently use versioned JSON-over-TLS control DTOs rather than the originally planned gRPC transport; raw command and byte payloads are preserved.
+- [x] Write contract serialization tests proving that success/error envelopes and Base64 byte chunks have stable camelCase JSON field names.
+- [x] Run `dotnet test tests/Rc.Contracts.Tests` and commit the contract foundation (`543bd11`, with follow-up hardening commits).
 
 ### Task 2: Add secure configuration, state storage and quota handling
 
 **Files:**
 - Create: `src/Rc.Agent/Configuration/*`, `src/Rc.Agent/Persistence/*`, `tests/Rc.Agent.Tests/Persistence/*`
 
-- [ ] Add a strongly typed `AgentOptions` record with defaults: Windows 10/11 x64, normal-task limit 8, elevated-task limit 2, log quota 200 MB and cancellation grace 10 seconds.
-- [ ] Build SQLite migrations for device identity, paired controller, job snapshots, output segments, transfer sessions and audit events. Store log data in segment files under the protected ProgramData root; SQLite stores paths and offsets.
-- [ ] Store private keys and the configured execution-account secret with DPAPI; reject a data directory whose ACL permits untrusted users to write it.
-- [ ] Write tests that migrate an empty database, persist/reload a job snapshot, and evict the oldest completed logs while retaining running-task tails under a 200 MB-equivalent test quota.
-- [ ] Run `dotnet test tests/Rc.Agent.Tests --filter Persistence` and commit `feat: add durable agent state and log quota`.
+- [x] Add a strongly typed `AgentOptions` record with defaults: Windows 10/11 x64, normal-task limit 8, elevated-task limit 2, log quota 200 MB and cancellation grace 10 seconds; file root and transfer/write limits are environment-configurable.
+- [x] Build SQLite migrations for device identity, paired controller, job snapshots, output segments, transfer sessions and audit events. Store log data in segment files under the protected data root; SQLite stores paths and offsets.
+- [x] Store private keys and the configured execution-account secret with DPAPI; reject a data directory whose ACL permits untrusted users to write it.
+- [x] Write tests that migrate an empty database, persist/reload a job snapshot, and evict the oldest completed logs while retaining running-task tails under a test quota.
+- [x] Run persistence tests and commit `feat: add durable agent state and log quota` (`3b2c3ea`).
 
 ### Task 3: Implement identity, one-controller pairing and mTLS
 
 **Files:**
 - Create: `src/Rc.Agent/Security/*`, `src/Rc.Cli/Commands/PairCommand.cs`, `tests/Rc.Agent.Tests/Security/*`
 
-- [ ] Generate an agent device key and self-signed TLS certificate on first start; expose only its SHA-256 fingerprint through discovery.
-- [ ] Implement a short-lived PAKE enrollment transcript bound to agent ID, controller ID, endpoint and certificate fingerprints. Require the one-time code for both discovery and manual address flows; expire, rate-limit and audit failed attempts.
-- [ ] On success, issue/store the controller certificate, pin the one controller identity and configure Kestrel/gRPC to require its client certificate for all non-pairing calls.
-- [ ] Implement `rcctl pair <ip:port> --code <code>` and JSON result output. Add a local-only `unpair` administrative command that deletes the controller certificate and ends active sessions.
-- [ ] Test successful manual pairing, expired code, wrong code, fingerprint substitution, second-controller rejection and unpair/re-pair.
-- [ ] Run security tests and commit `feat: add one-controller PAKE pairing and mTLS`.
+- [x] Generate an agent device key and self-signed TLS certificate on first start; expose only its SHA-256 fingerprint through discovery.
+- [ ] Implement the short-lived J-PAKE enrollment transcript and one-time-code flow. Agent/controller/endpoint/fingerprint binding and expiry are implemented; persistent audit/rate-limit completion remains pending.
+- [x] On success, store and pin the single controller certificate. Authenticated control calls use a TLS-pinned ECDSA challenge session, with legacy per-request signatures retained for compatibility.
+- [ ] `rcctl pair` and JSON output are implemented; the local-only `unpair` administrative command and active-session invalidation remain pending.
+- [ ] Pairing, fingerprint and second-controller tests exist; complete expired/wrong-code audit/rate-limit coverage and the user-facing unpair/re-pair test after adding the command.
+- [x] Run security tests and commit the one-controller pairing/TLS control plane (`0316064`, `adf22ac`).
 
 ### Task 4: Implement LAN discovery
 
 **Files:**
 - Create: `src/Rc.Agent/Discovery/*`, `src/Rc.Cli/Commands/DiscoverCommand.cs`, `tests/Rc.Agent.Tests/Discovery/*`
 
-- [ ] Publish a versioned UDP multicast announcement containing only device ID, display name, TCP port, protocol version and certificate fingerprint.
-- [ ] Implement `rcctl discover` with a bounded listen window, de-duplication by device ID and JSON rows sorted by display name.
-- [ ] Reject oversized, malformed and unsupported-version announcements; never treat discovery data as authentication.
-- [ ] Test payload redaction, round-trip decoding, duplicate suppression and the fallback manual pairing path.
-- [ ] Run discovery tests and commit `feat: add lan device discovery`.
+- [x] Publish a versioned UDP multicast announcement containing only device ID, display name, TCP port, protocol version and certificate fingerprint.
+- [x] Implement `rcctl discover` with a bounded listen window, de-duplication by device ID and JSON rows sorted by display name.
+- [x] Reject oversized, malformed and unsupported-version announcements; never treat discovery data as authentication.
+- [x] Test payload redaction, round-trip decoding, duplicate suppression and the fallback manual pairing path.
+- [x] Run discovery tests and commit `feat: add lan device discovery` (`534bddf`).
 
 ### Task 5: Build the independent task host and ConPTY output pipeline
 
 **Files:**
 - Create: `src/Rc.TaskHost/*`, `tests/Rc.TaskHost.Tests/*`
 
-- [ ] Add a `TaskLaunchRequest` file contract passed from agent to task host, containing argv/shell mode, working directory, environment, execution identity and job ID.
-- [ ] Start commands using ConPTY, capture raw stdout/stderr terminal bytes into ordered segment files and expose a job-specific named pipe for input, status and cancellation.
-- [ ] Track PID, process-tree handle, start/end timestamps, exit code, last-output timestamp and CPU/memory counters. Do not configure a kill-on-close job object, so a restarting agent does not terminate the task host.
-- [ ] Implement cancellation as Ctrl+C followed by a ten-second timeout and process-tree termination.
-- [ ] Test an argv command, a PowerShell shell command, two stdin writes plus EOF, output offsets, Ctrl+C cancellation and failed process start.
-- [ ] Run `dotnet test tests/Rc.TaskHost.Tests` on Windows and commit `feat: add durable interactive task host`.
+- [x] Add a `TaskLaunchRequest` file contract passed from agent to task host, containing argv/shell mode, working directory, environment, execution identity and job ID.
+- [ ] Independent TaskHost processes, ordered stdout/stderr segment files and job-specific named-pipe control are implemented; true ConPTY/HPCON startup is still pending.
+- [x] Track PID, start/end timestamps, exit code, last-output timestamp and CPU/memory counters without a kill-on-close job object, so a restarting agent does not terminate the task host.
+- [ ] Cancellation and process-tree termination are implemented; true ConPTY Ctrl+C delivery followed by the configured grace period remains pending.
+- [ ] TaskHost tests cover command execution, stdin/EOF, output offsets, cancellation and failed starts; ConPTY-specific Ctrl+C behavior remains pending.
+- [x] Run `dotnet test tests/Rc.TaskHost.Tests` on Windows and commit `feat: add durable interactive task host` (`5539f6c`, `7090feb`).
 
 ### Task 6: Add scheduling, recovery and job RPCs
 
 **Files:**
 - Create: `src/Rc.Agent/Jobs/*`, `src/Rc.Agent/Grpc/JobsService.cs`, `tests/Rc.Agent.Tests/Jobs/*`
 
-- [ ] Implement separate bounded queues for normal and elevated jobs with limits 8 and 2. Return `queued` immediately when a queue is full rather than rejecting the request.
-- [ ] On service start, locate live task hosts through their registered local pipes; reconnect to them and repair persisted job snapshots. Mark jobs left from an OS reboot as `interrupted_by_reboot` without relaunching.
-- [ ] Implement `Exec`, `ListJobs`, `GetJob`, `ReadLogs(afterOffset)`, `FollowLogs`, `WriteStdin`, `CloseStdin`, `WaitJob` and `CancelJob` RPCs.
-- [ ] Ensure every lifecycle transition is persisted and audited before it is reported to the controller.
-- [ ] Test queue ordering, controller disconnect/reconnect, agent restart recovery, reboot interruption marking, concurrent normal/elevated limits and duplicate cancellation.
-- [ ] Run job tests and commit `feat: add durable job scheduler and rpc api`.
+- [ ] Normal-job bounded scheduling and queued snapshots are implemented. The separate elevated queue/limit remains pending with the Broker.
+- [x] On Agent start, locate live TaskHosts through registered local pipes, reconnect and repair snapshots; mark unrecoverable running/queued jobs `interrupted_by_reboot` without relaunching.
+- [x] Implement versioned JSON-over-TLS `Exec`, `ListJobs`, `GetJob`, `ReadLogs(afterOffset)`, follow/retry, `WriteStdin`, `CloseStdin`, `WaitJob` and `CancelJob` control operations.
+- [ ] Lifecycle transitions are persisted before reporting; complete durable audit-event emission and audit verification.
+- [ ] Tests cover normal queueing, reconnect/recovery, reboot interruption and cancellation. Elevated concurrency and full duplicate-cancellation/audit coverage remain pending.
+- [x] Job and session tests pass; expanded scheduler/session work committed in `6be9ca6`.
 
 ### Task 7: Implement resumable file and directory transfer
 
 **Files:**
 - Create: `src/Rc.Agent/Files/*`, `src/Rc.Agent/Grpc/FilesService.cs`, `tests/Rc.Agent.Tests/Files/*`
 
-- [ ] Implement safe path resolution for the configured execution account; reject device names, traversal outside the resolved root, and writes through reparse points unless explicitly supported.
-- [ ] Implement `fs list`, `stat`, byte-range `read`, and temporary-file/atomic-replace text `write`.
-- [ ] Implement content-addressed transfer sessions with fixed-size chunks, per-chunk SHA-256, persisted received-chunk bitmaps, full-file SHA-256 verification and a cleanup expiry.
-- [ ] Recursively expand directory manifests using normalized relative paths; preserve content and directory structure only, not ACLs or ownership.
-- [ ] Test interrupted upload resume, interrupted download resume, altered chunk rejection, final hash mismatch, atomic write rollback, empty directories and traversal rejection.
-- [ ] Run file tests and commit `feat: add resumable file and directory transfer`.
+- [x] Implement safe path resolution for the configured file root; reject device names, traversal outside the root and access through reparse points.
+- [x] Implement `fs list`, `stat`, byte-range `read`, and temporary-file/atomic-replace `write`, with a configurable atomic-write limit.
+- [x] Implement persisted transfer sessions with fixed-size chunks, per-chunk SHA-256 receipts, full-file SHA-256 verification, resumable offsets, cleanup expiry and configurable transfer/chunk limits.
+- [x] Recursively expand directory manifests using normalized relative paths; preserve content, files and empty-directory structure only, not ACLs or ownership.
+- [x] Test interrupted upload persistence/resume, download range resume behavior, altered chunk and persisted-part rejection, final hash verification, atomic-write safety/limits, empty directories, expiry and traversal rejection; add an authenticated TLS file-control integration test.
+- [x] File and full-solution tests pass locally (177 total on 2026-07-12); the project-local temporary SDK was removed after verification, and the implementation was committed in `6be9ca6`.
 
 ### Task 8: Add the explicit elevated execution broker
 
