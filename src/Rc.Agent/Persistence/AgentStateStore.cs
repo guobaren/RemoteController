@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 using Rc.Contracts;
 using Rc.Agent.Security;
 
@@ -138,6 +138,26 @@ public sealed partial class AgentStateStore : IAsyncDisposable
         recordThirdVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
         await recordThirdVersion.ExecuteNonQueryAsync(cancellationToken);
         thirdTransaction.Commit();
+        using var fourthTransaction = connection.BeginTransaction();
+        var taskHostRegistrationMigration = connection.CreateCommand();
+        taskHostRegistrationMigration.Transaction = fourthTransaction;
+        taskHostRegistrationMigration.CommandText = """
+            CREATE TABLE IF NOT EXISTS task_host_registrations (
+                job_id TEXT NOT NULL PRIMARY KEY,
+                control_pipe_name TEXT NOT NULL UNIQUE,
+                process_id INTEGER NULL,
+                created_at_utc TEXT NOT NULL,
+                FOREIGN KEY (job_id) REFERENCES job_snapshots(job_id) ON DELETE CASCADE
+            );
+            """;
+        await taskHostRegistrationMigration.ExecuteNonQueryAsync(cancellationToken);
+
+        var recordFourthVersion = connection.CreateCommand();
+        recordFourthVersion.Transaction = fourthTransaction;
+        recordFourthVersion.CommandText = "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc) VALUES (4, $appliedAtUtc);";
+        recordFourthVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+        await recordFourthVersion.ExecuteNonQueryAsync(cancellationToken);
+        fourthTransaction.Commit();
     }
 
     public async Task SaveJobSnapshotAsync(JobSnapshot snapshot, CancellationToken cancellationToken = default)

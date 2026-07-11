@@ -15,6 +15,7 @@ try
         ?? throw new InvalidDataException("Task launch request is empty.");
     await using var runner = new TaskHostRunner(request);
     var status = await runner.RunAsync();
+    await PersistTerminalStatusAsync(request, status);
     Console.Out.WriteLine(JsonSerializer.Serialize(status, ContractJson.Options));
     return status.Job.ExitCode ?? 1;
 }
@@ -22,4 +23,14 @@ catch (Exception exception)
 {
     Console.Error.WriteLine(exception.Message);
     return 1;
+}
+
+static async Task PersistTerminalStatusAsync(TaskLaunchRequest request, TaskRuntimeStatus status)
+{
+    var directory = Path.Combine(request.DataRoot, "task-status");
+    Directory.CreateDirectory(directory);
+    var path = Path.Combine(directory, request.JobId + ".json");
+    var temporaryPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
+    await File.WriteAllTextAsync(temporaryPath, JsonSerializer.Serialize(status, ContractJson.Options));
+    File.Move(temporaryPath, path, overwrite: true);
 }

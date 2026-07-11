@@ -12,3 +12,5 @@ artifacts/
 .worktrees/
 .idea/
 .test-*/
+.dotnet/
+.codex/

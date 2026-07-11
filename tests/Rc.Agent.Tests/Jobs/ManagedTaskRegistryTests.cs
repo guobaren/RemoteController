@@ -21,7 +21,7 @@ public sealed class ManagedTaskRegistryTests
             "Start-Sleep -Milliseconds 500; Write-Output done"));
 
         Assert.StartsWith("job-", started.Job.JobId, StringComparison.Ordinal);
-        Assert.True(started.Job.State is JobState.Running or JobState.Exited);
+        Assert.Equal(JobState.Queued, started.Job.State);
 
         (TaskRuntimeStatus Status, bool IsActive) terminalResult = (started, true);
         TaskRuntimeStatus terminal = started;

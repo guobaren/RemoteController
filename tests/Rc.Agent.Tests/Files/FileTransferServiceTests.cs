@@ -1,0 +1,187 @@
+using System.Security.Cryptography;
+using System.Text;
+using Rc.Agent.Configuration;
+using Rc.Agent.Files;
+using Rc.Agent.Persistence;
+using Rc.Agent.Tests.Persistence;
+using Rc.Contracts;
+using Xunit;
+
+namespace Rc.Agent.Tests.Files;
+
+public sealed class FileTransferServiceTests
+{
+    [Fact]
+    public async Task BasicOperationsAreRootedAndWritesAreAtomic()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        using var service = CreateService(store, directory.Path);
+
+        await service.WriteAsync(new FileWriteRequest("docs/a.txt", Encoding.UTF8.GetBytes("hello"), false));
+        var read = await service.ReadAsync(new FileReadRequest("docs/a.txt", 1, 3));
+        var stat = await service.StatAsync(new FileStatRequest("docs/a.txt"));
+        var list = await service.ListAsync(new FileListRequest("docs"));
+
+        Assert.Equal("ell", Encoding.UTF8.GetString(read.Chunk.Data));
+        Assert.False(read.Chunk.IsFinal);
+        Assert.Equal(5, stat.Entry.Length);
+        Assert.Single(list.Entries);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.StatAsync(new FileStatRequest("..\\outside.txt")));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.StatAsync(new FileStatRequest("CON")));
+        await Assert.ThrowsAsync<IOException>(() => service.WriteAsync(new FileWriteRequest("docs/a.txt", [1], false)));
+        Assert.Equal("hello", await File.ReadAllTextAsync(Path.Combine(directory.Path, "docs", "a.txt")));
+    }
+
+    [Fact]
+    public async Task UploadPersistsReceiptsResumesAndVerifiesFinalHash()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        var data = Encoding.UTF8.GetBytes("abcdefgh");
+        var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, data.Length, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData(data)))]);
+        string sessionId;
+        using (var first = CreateService(store, directory.Path))
+        {
+            var started = await first.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "uploaded.bin", manifest, 4));
+            sessionId = started.Session.SessionId;
+            var chunk = new FileChunk(sessionId, string.Empty, 0, data[..4], false);
+            await first.WriteChunkAsync(new TransferWriteChunkRequest(chunk, Convert.ToHexString(SHA256.HashData(data[..4]))));
+        }
+        using (var resumed = CreateService(store, directory.Path))
+        {
+            var status = await resumed.StatusAsync(new TransferStatusRequest(sessionId));
+            Assert.Single(status.Session.CompletedChunks);
+            var bad = new FileChunk(sessionId, string.Empty, 4, data[4..], true);
+            await Assert.ThrowsAsync<InvalidDataException>(() => resumed.WriteChunkAsync(new TransferWriteChunkRequest(bad, new string('0', 64))));
+            await resumed.WriteChunkAsync(new TransferWriteChunkRequest(bad, Convert.ToHexString(SHA256.HashData(data[4..]))));
+            var completed = await resumed.CompleteAsync(new TransferCompleteRequest(sessionId));
+            Assert.Equal(TransferSessionState.Completed, completed.Session.State);
+        }
+        Assert.Equal(data, await File.ReadAllBytesAsync(Path.Combine(directory.Path, "uploaded.bin")));
+    }
+
+    [Fact]
+    public async Task DownloadReturnsVerifiedRangesAndQuotaRejectsOversizedManifest()
+    {
+        using var directory = new TemporaryDirectory();
+        await File.WriteAllTextAsync(Path.Combine(directory.Path, "source.txt"), "download");
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        using var service = CreateService(store, directory.Path, quota: 8);
+        var started = await service.StartTransferAsync(new TransferStartRequest(TransferDirection.Download, "source.txt", "local", new FileManifest("x", []), 4));
+        var first = await service.ReadChunkAsync(new TransferReadChunkRequest(started.Session.SessionId, string.Empty, 0, 4));
+        var second = await service.ReadChunkAsync(new TransferReadChunkRequest(started.Session.SessionId, string.Empty, 4, 4));
+        Assert.Equal("down", Encoding.UTF8.GetString(first.Chunk.Data));
+        Assert.Equal("load", Encoding.UTF8.GetString(second.Chunk.Data));
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(first.Chunk.Data)), first.ChunkSha256);
+        var tooLarge = new FileManifest("x", [new FileManifestEntry("x", 9, DateTimeOffset.UtcNow, new string('A', 64))]);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "x", "dest", tooLarge, 4)));
+    }
+
+    [Fact]
+    public async Task DirectoryUploadPreservesFilesEmptyDirectoriesAndDuplicateChunksAreIdempotent()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        var firstData = Encoding.UTF8.GetBytes("alpha");
+        var secondData = Encoding.UTF8.GetBytes("beta");
+        var manifest = new FileManifest("local", [
+            new FileManifestEntry("empty", 0, DateTimeOffset.UtcNow, null),
+            new FileManifestEntry("nested", 0, DateTimeOffset.UtcNow, null),
+            new FileManifestEntry("nested/a.txt", firstData.Length, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData(firstData))),
+            new FileManifestEntry("b.txt", secondData.Length, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData(secondData))),
+        ]);
+        using var service = CreateService(store, directory.Path);
+        var session = (await service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "tree", manifest, 4))).Session;
+
+        var firstChunk = new FileChunk(session.SessionId, "nested/a.txt", 0, firstData[..4], false);
+        var firstHash = Convert.ToHexString(SHA256.HashData(firstData[..4]));
+        await service.WriteChunkAsync(new TransferWriteChunkRequest(firstChunk, firstHash));
+        var duplicate = await service.WriteChunkAsync(new TransferWriteChunkRequest(firstChunk, firstHash));
+        Assert.Single(duplicate.Session.CompletedChunks);
+        await service.WriteChunkAsync(new TransferWriteChunkRequest(
+            new FileChunk(session.SessionId, "nested/a.txt", 4, firstData[4..], true),
+            Convert.ToHexString(SHA256.HashData(firstData[4..]))));
+        await service.WriteChunkAsync(new TransferWriteChunkRequest(
+            new FileChunk(session.SessionId, "b.txt", 0, secondData, true),
+            Convert.ToHexString(SHA256.HashData(secondData))));
+
+        var completed = await service.CompleteAsync(new TransferCompleteRequest(session.SessionId));
+
+        Assert.Equal(TransferSessionState.Completed, completed.Session.State);
+        Assert.True(Directory.Exists(Path.Combine(directory.Path, "tree", "empty")));
+        Assert.Equal(firstData, await File.ReadAllBytesAsync(Path.Combine(directory.Path, "tree", "nested", "a.txt")));
+        Assert.Equal(secondData, await File.ReadAllBytesAsync(Path.Combine(directory.Path, "tree", "b.txt")));
+    }
+
+    [Fact]
+    public async Task CompletionRejectsTamperedPersistedChunkData()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        var data = Encoding.UTF8.GetBytes("data");
+        var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, data.Length, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData(data)))]);
+        using var service = CreateService(store, directory.Path);
+        var session = (await service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "tampered.bin", manifest, 4))).Session;
+        await service.WriteChunkAsync(new TransferWriteChunkRequest(
+            new FileChunk(session.SessionId, string.Empty, 0, data, true),
+            Convert.ToHexString(SHA256.HashData(data))));
+        var transferDirectory = Path.Combine(store.DataRoot, "transfers", session.SessionId);
+        var part = Assert.Single(Directory.GetFiles(transferDirectory, "*.part"));
+        await File.WriteAllBytesAsync(part, Encoding.UTF8.GetBytes("evil"));
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => service.CompleteAsync(new TransferCompleteRequest(session.SessionId)));
+        Assert.False(File.Exists(Path.Combine(directory.Path, "tampered.bin")));
+    }
+
+    [Fact]
+    public async Task ExpiredSessionCannotResumeAndRemovesPartialData()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        var data = Encoding.UTF8.GetBytes("abcdefgh");
+        var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, data.Length, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData(data)))]);
+        using var service = CreateService(store, directory.Path, lifetime: TimeSpan.FromMilliseconds(100));
+        var session = (await service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "expired.bin", manifest, 4))).Session;
+        await service.WriteChunkAsync(new TransferWriteChunkRequest(
+            new FileChunk(session.SessionId, string.Empty, 0, data[..4], false),
+            Convert.ToHexString(SHA256.HashData(data[..4]))));
+        await Task.Delay(200);
+
+        var status = await service.StatusAsync(new TransferStatusRequest(session.SessionId));
+
+        Assert.Equal(TransferSessionState.Expired, status.Session.State);
+        Assert.False(Directory.Exists(Path.Combine(store.DataRoot, "transfers", session.SessionId)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.WriteChunkAsync(new TransferWriteChunkRequest(
+            new FileChunk(session.SessionId, string.Empty, 4, data[4..], true),
+            Convert.ToHexString(SHA256.HashData(data[4..])))));
+    }
+
+    [Fact]
+    public async Task ConfiguredAtomicWriteAndChunkLimitsAreEnforced()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        using var service = CreateService(store, directory.Path, atomicWriteLimit: 3);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.WriteAsync(new FileWriteRequest("too-large.bin", [1, 2, 3, 4], true)));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReadAsync(new FileReadRequest("missing.bin", 0, 5)));
+        var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, 1, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData([1]))) ]);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "dest.bin", manifest, 5)));
+    }
+    private static FileTransferService CreateService(AgentStateStore store, string root, long quota = 1024, int atomicWriteLimit = 1024, TimeSpan? lifetime = null) => new(store, new AgentOptions
+    {
+        FileRoot = root,
+        TransferQuotaBytes = quota,
+        MaximumTransferChunkBytes = 4,
+        MaximumAtomicWriteBytes = atomicWriteLimit,
+        TransferSessionLifetime = lifetime ?? TimeSpan.FromHours(1),
+    });
+}

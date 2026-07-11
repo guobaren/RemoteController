@@ -1,3 +1,4 @@
+#pragma warning disable CA1822 // JSON protocol discriminator properties must remain instance members.
 using Rc.Agent.Security;
 
 namespace Rc.Contracts;
@@ -24,10 +25,27 @@ public static class ControlMessageKinds
     public const string PairRound1 = "pair_round1";
     public const string PairRound2 = "pair_round2";
     public const string PairComplete = "pair_complete";
+    public const string SessionStart = "session_start";
+    public const string SessionAuthenticate = "session_authenticate";
     public const string ExecOnce = "exec_once";
     public const string JobStart = "job_start";
     public const string JobStatus = "job_status";
     public const string JobList = "job_list";
+    public const string JobLogs = "job_logs";
+    public const string JobInput = "job_input";
+    public const string JobCloseInput = "job_close_input";
+    public const string JobCancel = "job_cancel";
+    public const string JobWait = "job_wait";
+public const string FileManifest = "file_manifest";
+    public const string FileList = "file_list";
+    public const string FileStat = "file_stat";
+    public const string FileRead = "file_read";
+    public const string FileWrite = "file_write";
+    public const string TransferStart = "transfer_start";
+    public const string TransferWriteChunk = "transfer_write_chunk";
+    public const string TransferReadChunk = "transfer_read_chunk";
+    public const string TransferComplete = "transfer_complete";
+    public const string TransferStatus = "transfer_status";
 }
 
 public sealed record ControlPairStartRequest(
@@ -78,6 +96,28 @@ public sealed record ControlPairRound2Response(PairingPakeRound2 AgentRound2);
 public sealed record ControlPairRound3Response(PairingPakeRound3 AgentRound3);
 
 public sealed record ControlPairCompleteResponse(string ControllerId, DateTimeOffset PairedAtUtc);
+public sealed record ControlSessionStartRequest(int ProtocolVersion, string ControllerId)
+{
+    public string Kind => ControlMessageKinds.SessionStart;
+}
+
+public sealed record ControlSessionStartResponse(
+    Guid SessionId,
+    string AgentDeviceId,
+    string ControllerId,
+    byte[] Challenge,
+    DateTimeOffset ExpiresAtUtc);
+
+public sealed record ControlSessionAuthenticateRequest(
+    int ProtocolVersion,
+    Guid SessionId,
+    string ControllerId,
+    byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.SessionAuthenticate;
+}
+
+public sealed record ControlSessionAuthenticateResponse(Guid SessionId, string ControllerId, DateTimeOffset ExpiresAtUtc);
 /// <summary>
 /// A one-shot command request made by the paired controller. The request is signed
 /// with the paired controller certificate so a TLS connection alone never grants
@@ -138,3 +178,41 @@ public sealed record ControlJobListRequest(
 }
 
 public sealed record ControlJobListResponse(IReadOnlyList<JobSnapshot> Jobs);
+public sealed record ControlJobLogsRequest(int ProtocolVersion, string ControllerId, string JobId, JobOutputKind Stream, long AfterOffset, int MaximumBytes, byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobLogs;
+}
+
+public sealed record ControlJobLogsResponse(JobLogReadResponse Log);
+
+public sealed record ControlJobInputRequest(int ProtocolVersion, string ControllerId, string JobId, byte[] Data, byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobInput;
+}
+
+public sealed record ControlJobCloseInputRequest(int ProtocolVersion, string ControllerId, string JobId, byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobCloseInput;
+}
+
+public sealed record ControlJobCancelRequest(int ProtocolVersion, string ControllerId, string JobId, byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobCancel;
+}
+
+public sealed record ControlJobWaitRequest(int ProtocolVersion, string ControllerId, string JobId, TimeSpan? Timeout, byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobWait;
+}
+
+public sealed record ControlJobOperationResponse(TaskRuntimeStatus Status, bool Completed);
+public sealed record ControlFileManifestRequest(int ProtocolVersion, string ControllerId, FileManifestRequest Request) { public string Kind => ControlMessageKinds.FileManifest; }
+public sealed record ControlFileListRequest(int ProtocolVersion, string ControllerId, FileListRequest Request) { public string Kind => ControlMessageKinds.FileList; }
+public sealed record ControlFileStatRequest(int ProtocolVersion, string ControllerId, FileStatRequest Request) { public string Kind => ControlMessageKinds.FileStat; }
+public sealed record ControlFileReadRequest(int ProtocolVersion, string ControllerId, FileReadRequest Request) { public string Kind => ControlMessageKinds.FileRead; }
+public sealed record ControlFileWriteRequest(int ProtocolVersion, string ControllerId, FileWriteRequest Request) { public string Kind => ControlMessageKinds.FileWrite; }
+public sealed record ControlTransferStartRequest(int ProtocolVersion, string ControllerId, TransferStartRequest Request) { public string Kind => ControlMessageKinds.TransferStart; }
+public sealed record ControlTransferWriteChunkRequest(int ProtocolVersion, string ControllerId, TransferWriteChunkRequest Request) { public string Kind => ControlMessageKinds.TransferWriteChunk; }
+public sealed record ControlTransferReadChunkRequest(int ProtocolVersion, string ControllerId, TransferReadChunkRequest Request) { public string Kind => ControlMessageKinds.TransferReadChunk; }
+public sealed record ControlTransferCompleteRequest(int ProtocolVersion, string ControllerId, TransferCompleteRequest Request) { public string Kind => ControlMessageKinds.TransferComplete; }
+public sealed record ControlTransferStatusRequest(int ProtocolVersion, string ControllerId, TransferStatusRequest Request) { public string Kind => ControlMessageKinds.TransferStatus; }

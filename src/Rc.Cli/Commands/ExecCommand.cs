@@ -24,45 +24,24 @@ public static class ExecCommand
 
         try
         {
-            var hello = await SendAsync<ControlHelloResponse>(endpoint!, fingerprint!, new ControlHelloRequest(1));
-            if (!hello.HasPairedController)
+            await using var connection = await AuthenticatedControlConnection.ConnectAsync(endpoint!, fingerprint!);
+            var request = new ControlExecuteOnceRequest(1, connection.ControllerId, execution!, []);
+            var response = await connection.SendAsync<ControlExecuteOnceResponse>(request);
+            if (text)
             {
-                await error.WriteLineAsync("This agent has no paired controller. Run rcctl pair first.");
-                return 1;
-            }
-
-            using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName);
-            using var privateKey = identity.GetPrivateKey();
-            var signature = ControlRequestAuthentication.SignExecuteOnce(
-                hello.DeviceId,
-                identity.ControllerId,
-                execution!,
-                privateKey);
-            try
-            {
-                var request = new ControlExecuteOnceRequest(1, identity.ControllerId, execution!, signature);
-                var response = await SendAsync<ControlExecuteOnceResponse>(endpoint!, fingerprint!, request);
-                if (text)
+                await output.WriteAsync(Encoding.UTF8.GetString(response.StandardOutput));
+                await error.WriteAsync(Encoding.UTF8.GetString(response.StandardError));
+                await error.WriteLineAsync($"[rcctl] jobId={response.Job.JobId} state={response.Job.State} exitCode={response.Job.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "n/a"}");
+                if (response.StandardOutputTruncated || response.StandardErrorTruncated)
                 {
-                    await output.WriteAsync(Encoding.UTF8.GetString(response.StandardOutput));
-                    await error.WriteAsync(Encoding.UTF8.GetString(response.StandardError));
-                    await error.WriteLineAsync($"[rcctl] jobId={response.Job.JobId} state={response.Job.State} exitCode={response.Job.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "n/a"}");
-                    if (response.StandardOutputTruncated || response.StandardErrorTruncated)
-                    {
-                        await error.WriteLineAsync("[rcctl] Output was truncated to 256 KiB per stream. The complete captured output remains on the agent.");
-                    }
+                    await error.WriteLineAsync("[rcctl] Output was truncated to 256 KiB per stream. The complete captured output remains on the agent.");
                 }
-                else
-                {
-                    await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
-                }
-
-                return response.Job.ExitCode ?? 1;
             }
-            finally
+            else
             {
-                CryptographicOperations.ZeroMemory(signature);
+                await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
             }
+            return response.Job.ExitCode ?? 1;
         }
         catch (AuthenticationException exception)
         {
@@ -85,26 +64,6 @@ public static class ExecCommand
             return 1;
         }
     }
-
-    private static async Task<TResponse> SendAsync<TResponse>(IPEndPoint endpoint, string fingerprint, object request)
-    {
-        await using var connection = await PinnedTlsConnection.ConnectAsync(endpoint, fingerprint);
-        var tls = connection.Stream;
-        await using var writer = new StreamWriter(tls, new UTF8Encoding(false), MaximumLineLength, leaveOpen: true) { AutoFlush = true };
-        using var reader = new StreamReader(tls, new UTF8Encoding(false), false, MaximumLineLength, leaveOpen: true);
-        await writer.WriteLineAsync(JsonSerializer.Serialize(request, ContractJson.Options));
-        var line = await reader.ReadLineAsync();
-        var response = line is null
-            ? null
-            : JsonSerializer.Deserialize<ResultEnvelope<TResponse>>(line, ContractJson.Options);
-        if (response is not { Ok: true, Result: not null })
-        {
-            throw new InvalidOperationException(response?.Error?.Message ?? "The agent did not return a valid response.");
-        }
-
-        return response.Result;
-    }
-
     private static bool TryParseArguments(
         string[] args,
         out IPEndPoint? endpoint,

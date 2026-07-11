@@ -24,6 +24,11 @@ public static class JobCommand
                 "start" => StartAsync(args[1..], output, error),
                 "status" => StatusAsync(args[1..], output, error),
                 "list" => ListAsync(args[1..], output, error),
+                "logs" => JobExtendedCommands.LogsAsync(args[1..], output, error),
+                "input" => JobExtendedCommands.InputAsync(args[1..], output, error),
+                "close-input" => JobExtendedCommands.CloseInputAsync(args[1..], output, error),
+                "cancel" => JobExtendedCommands.CancelAsync(args[1..], output, error),
+                "wait" => JobExtendedCommands.WaitAsync(args[1..], output, error),
                 _ => WriteUsageAsync(error),
             };
 
@@ -34,31 +39,19 @@ public static class JobCommand
             await error.WriteLineAsync(argumentError);
             return 2;
         }
-
         try
         {
-            var hello = await SendAsync<ControlHelloResponse>(endpoint!, fingerprint!, new ControlHelloRequest(1));
-            using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName);
-            using var privateKey = identity.GetPrivateKey();
-            var signature = ControlRequestAuthentication.SignJobStart(hello.DeviceId, identity.ControllerId, execution!, privateKey);
-            try
+            await using var connection = await AuthenticatedControlConnection.ConnectAsync(endpoint!, fingerprint!);
+            var response = await connection.SendAsync<ControlJobStartResponse>(new ControlJobStartRequest(1, connection.ControllerId, execution!, []));
+            if (text)
             {
-                var response = await SendAsync<ControlJobStartResponse>(endpoint!, fingerprint!, new ControlJobStartRequest(1, identity.ControllerId, execution!, signature));
-                if (text)
-                {
-                    await WriteRuntimeStatusAsync(output, response.Status, "started");
-                }
-                else
-                {
-                    await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
-                }
-
-                return response.Status.Job.State == JobState.FailedToStart ? 1 : 0;
+                await WriteRuntimeStatusAsync(output, response.Status, "started");
             }
-            finally
+            else
             {
-                CryptographicOperations.ZeroMemory(signature);
+                await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
             }
+            return response.Status.Job.State == JobState.FailedToStart ? 1 : 0;
         }
         catch (Exception exception) when (IsExpectedConnectionException(exception))
         {
@@ -66,7 +59,6 @@ public static class JobCommand
             return 1;
         }
     }
-
     private static async Task<int> StatusAsync(string[] args, TextWriter output, TextWriter error)
     {
         if (!TryParseStatus(args, out var endpoint, out var fingerprint, out var jobId, out var text, out var argumentError))
@@ -74,31 +66,19 @@ public static class JobCommand
             await error.WriteLineAsync(argumentError);
             return 2;
         }
-
         try
         {
-            var hello = await SendAsync<ControlHelloResponse>(endpoint!, fingerprint!, new ControlHelloRequest(1));
-            using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName);
-            using var privateKey = identity.GetPrivateKey();
-            var signature = ControlRequestAuthentication.SignJobStatus(hello.DeviceId, identity.ControllerId, jobId!, privateKey);
-            try
+            await using var connection = await AuthenticatedControlConnection.ConnectAsync(endpoint!, fingerprint!);
+            var response = await connection.SendAsync<ControlJobStatusResponse>(new ControlJobStatusRequest(1, connection.ControllerId, jobId!, []));
+            if (text)
             {
-                var response = await SendAsync<ControlJobStatusResponse>(endpoint!, fingerprint!, new ControlJobStatusRequest(1, identity.ControllerId, jobId!, signature));
-                if (text)
-                {
-                    await WriteRuntimeStatusAsync(output, response.Status, response.IsActive ? "active" : "stored");
-                }
-                else
-                {
-                    await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
-                }
-
-                return 0;
+                await WriteRuntimeStatusAsync(output, response.Status, response.IsActive ? "active" : "stored");
             }
-            finally
+            else
             {
-                CryptographicOperations.ZeroMemory(signature);
+                await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
             }
+            return 0;
         }
         catch (Exception exception) when (IsExpectedConnectionException(exception))
         {
@@ -106,7 +86,6 @@ public static class JobCommand
             return 1;
         }
     }
-
     private static async Task<int> ListAsync(string[] args, TextWriter output, TextWriter error)
     {
         if (!TryParseList(args, out var endpoint, out var fingerprint, out var state, out var text, out var argumentError))
@@ -114,34 +93,22 @@ public static class JobCommand
             await error.WriteLineAsync(argumentError);
             return 2;
         }
-
         try
         {
-            var hello = await SendAsync<ControlHelloResponse>(endpoint!, fingerprint!, new ControlHelloRequest(1));
-            using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName);
-            using var privateKey = identity.GetPrivateKey();
-            var signature = ControlRequestAuthentication.SignJobList(hello.DeviceId, identity.ControllerId, state, privateKey);
-            try
+            await using var connection = await AuthenticatedControlConnection.ConnectAsync(endpoint!, fingerprint!);
+            var response = await connection.SendAsync<ControlJobListResponse>(new ControlJobListRequest(1, connection.ControllerId, state, []));
+            if (text)
             {
-                var response = await SendAsync<ControlJobListResponse>(endpoint!, fingerprint!, new ControlJobListRequest(1, identity.ControllerId, state, signature));
-                if (text)
+                foreach (var job in response.Jobs)
                 {
-                    foreach (var job in response.Jobs)
-                    {
-                        await output.WriteLineAsync($"{job.JobId} state={job.State} exitCode={job.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "n/a"} created={job.CreatedAtUtc:O}");
-                    }
+                    await output.WriteLineAsync($"{job.JobId} state={job.State} exitCode={job.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "n/a"} created={job.CreatedAtUtc:O}");
                 }
-                else
-                {
-                    await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
-                }
-
-                return 0;
             }
-            finally
+            else
             {
-                CryptographicOperations.ZeroMemory(signature);
+                await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
             }
+            return 0;
         }
         catch (Exception exception) when (IsExpectedConnectionException(exception))
         {
@@ -149,7 +116,6 @@ public static class JobCommand
             return 1;
         }
     }
-
     private static async Task WriteRuntimeStatusAsync(TextWriter output, TaskRuntimeStatus status, string source)
     {
         var job = status.Job;
@@ -159,23 +125,6 @@ public static class JobCommand
         {
             await output.WriteLineAsync($"[rcctl] error={job.Error.Code}: {job.Error.Message}");
         }
-    }
-
-    private static async Task<TResponse> SendAsync<TResponse>(IPEndPoint endpoint, string fingerprint, object request)
-    {
-        await using var connection = await PinnedTlsConnection.ConnectAsync(endpoint, fingerprint);
-        var tls = connection.Stream;
-        await using var writer = new StreamWriter(tls, new UTF8Encoding(false), MaximumLineLength, leaveOpen: true) { AutoFlush = true };
-        using var reader = new StreamReader(tls, new UTF8Encoding(false), false, MaximumLineLength, leaveOpen: true);
-        await writer.WriteLineAsync(JsonSerializer.Serialize(request, ContractJson.Options));
-        var line = await reader.ReadLineAsync();
-        var response = line is null ? null : JsonSerializer.Deserialize<ResultEnvelope<TResponse>>(line, ContractJson.Options);
-        if (response is not { Ok: true, Result: not null })
-        {
-            throw new InvalidOperationException(response?.Error?.Message ?? "The agent did not return a valid response.");
-        }
-
-        return response.Result;
     }
 
     private static bool TryParseStart(string[] args, out IPEndPoint? endpoint, out string? fingerprint, out ExecRequest? execution, out bool text, out string? error)

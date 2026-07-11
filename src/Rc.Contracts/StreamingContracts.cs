@@ -45,7 +45,7 @@ public sealed class FileChunk
     public FileChunk(string transferSessionId, string relativePath, long offset, byte[] data, bool isFinal)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(transferSessionId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        ArgumentNullException.ThrowIfNull(relativePath);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentNullException.ThrowIfNull(data);
         TransferSessionId = transferSessionId;

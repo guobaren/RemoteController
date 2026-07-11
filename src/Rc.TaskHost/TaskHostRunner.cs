@@ -99,8 +99,13 @@ public sealed class TaskHostRunner : IAsyncDisposable
             runningProcess = process;
         }
 
-        if (runningProcess is null || runningProcess.HasExited)
+        if (runningProcess is null)
         {
+            return;
+        }
+        if (runningProcess.HasExited)
+        {
+            MarkCancellationObserved(runningProcess);
             return;
         }
 
@@ -108,6 +113,7 @@ public sealed class TaskHostRunner : IAsyncDisposable
         try
         {
             await runningProcess.WaitForExitAsync(CancellationToken.None).WaitAsync(request.CancellationGracePeriod, cancellationToken).ConfigureAwait(false);
+            MarkCancellationObserved(runningProcess);
             return;
         }
         catch (TimeoutException)
@@ -119,8 +125,19 @@ public sealed class TaskHostRunner : IAsyncDisposable
         {
             runningProcess.Kill(entireProcessTree: true);
         }
+        await runningProcess.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+        MarkCancellationObserved(runningProcess);
     }
 
+    private void MarkCancellationObserved(Process runningProcess)
+    {
+        lock (stateGate)
+        {
+            exitCode = runningProcess.ExitCode;
+            finishedAtUtc ??= DateTimeOffset.UtcNow;
+            state = JobState.Cancelled;
+        }
+    }
     public async ValueTask DisposeAsync()
     {
         lifetimeCancellation.Cancel();

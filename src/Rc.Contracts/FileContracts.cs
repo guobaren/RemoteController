@@ -150,7 +150,8 @@ public sealed class TransferSessionSnapshot
         int chunkSize,
         DateTimeOffset createdAtUtc,
         DateTimeOffset expiresAtUtc,
-        IReadOnlyList<string>? completedRelativePaths = null)
+        IReadOnlyList<string>? completedRelativePaths = null,
+        IReadOnlyList<TransferChunkReceipt>? completedChunks = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
@@ -179,6 +180,7 @@ public sealed class TransferSessionSnapshot
         CreatedAtUtc = createdAtUtc;
         ExpiresAtUtc = expiresAtUtc;
         CompletedRelativePaths = Array.AsReadOnly((completedRelativePaths ?? []).ToArray());
+        CompletedChunks = Array.AsReadOnly((completedChunks ?? []).ToArray());
     }
 
     public string SessionId { get; }
@@ -200,7 +202,11 @@ public sealed class TransferSessionSnapshot
     public DateTimeOffset ExpiresAtUtc { get; }
 
     public IReadOnlyList<string> CompletedRelativePaths { get; }
+
+    public IReadOnlyList<TransferChunkReceipt> CompletedChunks { get; }
 }
+
+public sealed record TransferChunkReceipt(string RelativePath, long Offset, int Length, string Sha256);
 
 public sealed record TransferStartRequest(
     TransferDirection Direction,
@@ -233,7 +239,7 @@ public sealed class TransferReadChunkRequest
     public TransferReadChunkRequest(string sessionId, string relativePath, long offset, int maximumBytes)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        ArgumentNullException.ThrowIfNull(relativePath);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
         SessionId = sessionId;

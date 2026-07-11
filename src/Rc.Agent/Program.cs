@@ -23,6 +23,7 @@ using var identity = await certificateManager.GetOrCreateAsync(cancellation.Toke
 using var pairingCoordinator = new PairingCoordinator(stateStore, certificateManager);
 await using var discoveryPublisher = new LanDiscoveryPublisher();
 await using var controlListener = new TlsControlListener(identity, stateStore, pairingCoordinator, tcpPort);
+await controlListener.InitializeAsync(cancellation.Token);
 controlListener.Start();
 var controlListenerTask = controlListener.RunAsync(cancellation.Token);
 
