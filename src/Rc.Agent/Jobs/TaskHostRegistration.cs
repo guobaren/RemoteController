@@ -27,6 +27,8 @@ public sealed class TaskHostRegistration
     public Task<TaskRuntimeStatus> CloseStandardInputAsync(string controlPipeName, TimeSpan timeout, CancellationToken cancellationToken = default) =>
         SendAndPersistAsync(controlPipeName, new TaskControlMessage(TaskControlKind.CloseStandardInput), timeout, cancellationToken);
 
+    public Task<TaskRuntimeStatus> ResizeTerminalAsync(string controlPipeName, int columns, int rows, TimeSpan timeout, CancellationToken cancellationToken = default) =>
+        SendAndPersistAsync(controlPipeName, new TaskControlMessage(TaskControlKind.ResizeTerminal, columns: columns, rows: rows), timeout, cancellationToken);
     public Task<TaskRuntimeStatus> CancelAsync(string controlPipeName, TimeSpan timeout, CancellationToken cancellationToken = default) =>
         SendAndPersistAsync(controlPipeName, new TaskControlMessage(TaskControlKind.Cancel), timeout, cancellationToken);
 

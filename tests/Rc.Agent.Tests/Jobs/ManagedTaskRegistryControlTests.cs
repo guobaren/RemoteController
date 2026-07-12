@@ -51,6 +51,39 @@ public sealed class ManagedTaskRegistryControlTests
     }
 
     [Fact]
+    public async Task CancelAfterNaturalExitReturnsTheDurableTerminalState()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        await using var registry = new ManagedTaskRegistry(store);
+
+        var started = await registry.StartAsync(ExecRequest.ForShell(ShellKind.PowerShell, "Write-Output done"));
+        var terminal = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(10));
+        var repeatedCancel = await registry.CancelAsync(started.Job.JobId);
+
+        Assert.True(terminal.Completed);
+        Assert.Equal(JobState.Exited, terminal.Status.Job.State);
+        Assert.Equal(JobState.Exited, repeatedCancel.Job.State);
+        Assert.Equal(terminal.Status.Job.ExitCode, repeatedCancel.Job.ExitCode);
+    }
+    [Fact]
+    public async Task ResizeRejectsRunningTasksWithoutPseudoConsole()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        await using var registry = new ManagedTaskRegistry(store);
+
+        var started = await registry.StartAsync(ExecRequest.ForDirectArgv(["cmd.exe", "/d", "/c", "more"]));
+        await WaitUntilRunningAsync(registry, started.Job.JobId);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => registry.ResizeTerminalAsync(started.Job.JobId, 120, 30));
+
+        await registry.CloseStandardInputAsync(started.Job.JobId);
+        Assert.True((await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(10))).Completed);
+    }
+    [Fact]
     public async Task PersistedTerminalLogsOnlyMarkTheLastPageFinal()
     {
         using var directory = new TemporaryDirectory();

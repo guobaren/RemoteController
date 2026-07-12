@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Rc.Agent.Jobs;
 using Rc.Agent.Persistence;
@@ -32,6 +33,30 @@ public sealed class ManagedTaskRegistrySchedulingAndRecoveryTests
     }
 
     [Fact]
+    public async Task QueuedCancellationIsIdempotentAndNeverStartsTheTaskHost()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        await using var registry = new ManagedTaskRegistry(store, normalConcurrency: 1);
+
+        var first = await registry.StartAsync(ExecRequest.ForDirectArgv(["cmd.exe", "/d", "/c", "more"]));
+        await WaitForStateAsync(registry, first.Job.JobId, JobState.Running);
+        var queued = await registry.StartAsync(ExecRequest.ForDirectArgv(["cmd.exe", "/d", "/c", "more"]));
+        Assert.Equal(JobState.Queued, queued.Job.State);
+
+        Assert.Equal(JobState.Cancelled, (await registry.CancelAsync(queued.Job.JobId)).Job.State);
+        Assert.Equal(JobState.Cancelled, (await registry.CancelAsync(queued.Job.JobId)).Job.State);
+
+        await registry.CloseStandardInputAsync(first.Job.JobId);
+        Assert.True((await registry.WaitAsync(first.Job.JobId, TimeSpan.FromSeconds(10))).Completed);
+        await Task.Delay(200);
+
+        Assert.Equal(JobState.Cancelled, (await registry.CancelAsync(queued.Job.JobId)).Job.State);
+        Assert.Equal(JobState.Cancelled, (await registry.GetStatusAsync(queued.Job.JobId)).Status.Job.State);
+        Assert.Empty(await store.ListTaskHostRegistrationsAsync());
+    }
+    [Fact]
     public async Task MissingTaskHostAfterRestartIsMarkedInterruptedWithoutReplay()
     {
         using var directory = new TemporaryDirectory();
@@ -52,6 +77,34 @@ public sealed class ManagedTaskRegistrySchedulingAndRecoveryTests
         Assert.Empty(await store.ListTaskHostRegistrationsAsync());
     }
 
+    [Fact]
+    public async Task AbruptExternalTaskHostExitConvergesToDurableTerminalState()
+    {
+        var taskHostPath = Path.Combine(AppContext.BaseDirectory, "Rc.TaskHost.exe");
+        Assert.True(File.Exists(taskHostPath), $"TaskHost executable not found at {taskHostPath}");
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        await using var registry = new ManagedTaskRegistry(store, normalConcurrency: 1, launcher: new ExternalTaskHostLauncher(taskHostPath));
+
+        var started = await registry.StartAsync(ExecRequest.ForDirectArgv(["cmd.exe", "/d", "/c", "more"]));
+        await WaitForStateAsync(registry, started.Job.JobId, JobState.Running);
+        var registration = Assert.Single(await store.ListTaskHostRegistrationsAsync());
+        Assert.NotNull(registration.ProcessId);
+
+        using (var taskHost = Process.GetProcessById(registration.ProcessId.Value))
+        {
+            taskHost.Kill(entireProcessTree: true);
+            await taskHost.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        var terminal = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(15));
+
+        Assert.True(terminal.Completed);
+        Assert.Equal(JobState.FailedToStart, terminal.Status.Job.State);
+        Assert.Equal(ErrorCode.Internal, terminal.Status.Job.Error?.Code);
+        Assert.Empty(await store.ListTaskHostRegistrationsAsync());
+    }
     [Fact]
     public async Task ExternalTaskHostSurvivesRegistryRestartAndReconnects()
     {

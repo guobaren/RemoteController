@@ -58,6 +58,20 @@ public sealed class TaskHostRunnerTests
     }
 
     [Fact]
+    public async Task OutputCaptureCompletesWithoutAControllerReadingLogs()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(
+            ShellKind.PowerShell,
+            "[Console]::Out.Write(('z' * 524288))"));
+
+        var status = await runner.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(JobState.Exited, status.Job.State);
+        Assert.Equal(524288, status.StdoutLength);
+        Assert.Equal(524288, (await fixture.SegmentsAsync("stdout")).Sum(segment => segment.Length));
+    }
+    [Fact]
     public async Task NamedPipeAcceptsTwoStandardInputWritesThenEof()
     {
         await using var fixture = new TaskHostFixture();
@@ -120,6 +134,85 @@ public sealed class TaskHostRunnerTests
         Assert.Equal(JobState.Cancelled, final.Job.State);
     }
 
+    [Fact]
+    public async Task PseudoConsoleRunsInteractiveShellAndAcceptsResize()
+    {
+        await using var fixture = new TaskHostFixture();
+        await using var runner = fixture.CreateRunner(ExecRequest.ForDirectArgv(
+            ["cmd.exe", "/d", "/q"],
+            terminal: new TerminalOptions(100, 32)));
+        var completion = runner.RunAsync();
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        var initial = runner.GetStatus();
+        Assert.True(initial.Job.State == JobState.Running, $"state={initial.Job.State} exit={initial.Job.ExitCode} error={initial.Job.Error?.Message}");
+
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.StandardInput, Encoding.UTF8.GetBytes("echo pty-ready\r")));
+        var terminalOutput = string.Empty;
+        for (var attempt = 0; attempt < 100 && !terminalOutput.Contains("pty-ready", StringComparison.Ordinal); attempt++)
+        {
+            await Task.Delay(20);
+            terminalOutput = await fixture.ReadOutputAsync("stdout");
+        }
+        var beforeResize = runner.GetStatus();
+        Assert.True(beforeResize.Job.State == JobState.Running, $"state={beforeResize.Job.State} exit={beforeResize.Job.ExitCode} output={terminalOutput}");
+        var resized = await fixture.SendAsync(new TaskControlMessage(TaskControlKind.ResizeTerminal, columns: 132, rows: 43));
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.StandardInput, Encoding.UTF8.GetBytes("echo pty-resized\r")));
+        for (var attempt = 0; attempt < 100 && !terminalOutput.Contains("pty-resized", StringComparison.Ordinal); attempt++)
+        {
+            await Task.Delay(20);
+            terminalOutput = await fixture.ReadOutputAsync("stdout");
+        }
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.StandardInput, Encoding.UTF8.GetBytes("exit\r")));
+        var status = await completion;
+
+        Assert.Null(resized.Error);
+        Assert.Equal(JobState.Exited, status.Job.State);
+        Assert.Contains("pty-ready", terminalOutput, StringComparison.Ordinal);
+        Assert.Contains("pty-resized", terminalOutput, StringComparison.Ordinal);
+        Assert.Equal(string.Empty, await fixture.ReadOutputAsync("stderr"));
+    }
+
+    [Fact]
+    public async Task PseudoConsoleCancellationSendsInterruptBeforeProcessTreeKill()
+    {
+        await using var fixture = new TaskHostFixture(cancellationGracePeriod: TimeSpan.FromSeconds(5));
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(
+            ShellKind.Cmd,
+            "ping 127.0.0.1 -n 30 > nul",
+            terminal: new TerminalOptions()));
+        var completion = runner.RunAsync();
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        var initial = runner.GetStatus();
+        Assert.True(initial.Job.State == JobState.Running, $"state={initial.Job.State} exit={initial.Job.ExitCode} error={initial.Job.Error?.Message}");
+        var startedAt = DateTimeOffset.UtcNow;
+
+        var cancelled = await fixture.SendAsync(new TaskControlMessage(TaskControlKind.Cancel));
+        var status = await completion;
+
+        Assert.Equal(JobState.Cancelled, cancelled.Status.Job.State);
+        Assert.Equal(JobState.Cancelled, status.Job.State);
+        Assert.True(DateTimeOffset.UtcNow - startedAt < TimeSpan.FromSeconds(4), "ConPTY Ctrl+C did not terminate before the force-kill grace period.");
+    }
+    [Fact]
+    public async Task PseudoConsoleCancellationForceKillsAfterGraceWhenInterruptIsIgnored()
+    {
+        await using var fixture = new TaskHostFixture(cancellationGracePeriod: TimeSpan.FromMilliseconds(200));
+        await using var runner = fixture.CreateRunner(ExecRequest.ForDirectArgv(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[Console]::TreatControlCAsInput=$true; Start-Sleep -Seconds 30"],
+            terminal: new TerminalOptions()));
+        var completion = runner.RunAsync();
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(JobState.Running, runner.GetStatus().Job.State);
+        var startedAt = DateTimeOffset.UtcNow;
+
+        await fixture.SendAsync(new TaskControlMessage(TaskControlKind.Cancel));
+        var status = await completion;
+        var elapsed = DateTimeOffset.UtcNow - startedAt;
+
+        Assert.Equal(JobState.Cancelled, status.Job.State);
+        Assert.True(elapsed >= TimeSpan.FromMilliseconds(150), $"Cancellation returned before the configured grace period: {elapsed}.");
+        Assert.True(elapsed < TimeSpan.FromSeconds(5), $"Force-kill fallback took too long: {elapsed}.");
+    }
     [Fact]
     public async Task FailedStartProducesDurableFailureStatus()
     {

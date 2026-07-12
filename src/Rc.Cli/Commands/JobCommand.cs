@@ -29,6 +29,7 @@ public static class JobCommand
                 "close-input" => JobExtendedCommands.CloseInputAsync(args[1..], output, error),
                 "cancel" => JobExtendedCommands.CancelAsync(args[1..], output, error),
                 "wait" => JobExtendedCommands.WaitAsync(args[1..], output, error),
+                "resize" => JobExtendedCommands.ResizeAsync(args[1..], output, error),
                 _ => WriteUsageAsync(error),
             };
 
@@ -143,6 +144,9 @@ public static class JobCommand
         var shell = ShellKind.PowerShell;
         string? command = null;
         string? workingDirectory = null;
+        var usePseudoConsole = false;
+        var columns = 120;
+        var rows = 30;
         for (var index = 1; index < args.Length; index++)
         {
             switch (args[index])
@@ -163,6 +167,25 @@ public static class JobCommand
                 case "--workdir" when index + 1 < args.Length:
                     workingDirectory = args[++index];
                     break;
+                case "--pty":
+                    usePseudoConsole = true;
+                    break;
+                case "--cols" when index + 1 < args.Length:
+                    if (!int.TryParse(args[++index], NumberStyles.None, CultureInfo.InvariantCulture, out columns) || columns is < 1 or > 1000)
+                    {
+                        error = "--cols must be between 1 and 1000.";
+                        return false;
+                    }
+                    usePseudoConsole = true;
+                    break;
+                case "--rows" when index + 1 < args.Length:
+                    if (!int.TryParse(args[++index], NumberStyles.None, CultureInfo.InvariantCulture, out rows) || rows is < 1 or > 1000)
+                    {
+                        error = "--rows must be between 1 and 1000.";
+                        return false;
+                    }
+                    usePseudoConsole = true;
+                    break;
                 case "--text":
                     text = true;
                     break;
@@ -180,7 +203,7 @@ public static class JobCommand
 
         try
         {
-            execution = ExecRequest.ForShell(shell, command, workingDirectory);
+            execution = ExecRequest.ForShell(shell, command, workingDirectory, terminal: usePseudoConsole ? new TerminalOptions(columns, rows) : null);
             return true;
         }
         catch (ArgumentException exception)
@@ -301,7 +324,7 @@ public static class JobCommand
     }
 
     private static string Usage() =>
-        "Usage: rcctl job start <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--text] | rcctl job status <IP:port> --fingerprint <SHA256> --job <jobId> [--text] | rcctl job list <IP:port> --fingerprint <SHA256> [--state <JobState>] [--text]";
+        "Usage: rcctl job start <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--pty] [--cols <1-1000>] [--rows <1-1000>] [--text] | rcctl job status <IP:port> --fingerprint <SHA256> --job <jobId> [--text] | rcctl job list <IP:port> --fingerprint <SHA256> [--state <JobState>] [--text]";
 
     private static string? NormalizeFingerprint(string value)
     {

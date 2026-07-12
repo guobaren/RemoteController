@@ -76,6 +76,7 @@ public enum TaskControlKind
     CloseStandardInput,
     GetStatus,
     Cancel,
+    ResizeTerminal,
 }
 
 public sealed class TaskControlMessage
@@ -83,25 +84,41 @@ public sealed class TaskControlMessage
     private readonly byte[]? data;
 
     [JsonConstructor]
-    public TaskControlMessage(TaskControlKind kind, byte[]? data = null)
+    public TaskControlMessage(TaskControlKind kind, byte[]? data = null, int? columns = null, int? rows = null)
     {
         if (kind == TaskControlKind.StandardInput && data is null)
         {
             throw new ArgumentException("Standard input data is required.", nameof(data));
         }
-
         if (kind != TaskControlKind.StandardInput && data is not null)
         {
             throw new ArgumentException("Only standard input messages may contain data.", nameof(data));
         }
+        if (kind == TaskControlKind.ResizeTerminal)
+        {
+            if (columns is not >= 1 or > 1000 || rows is not >= 1 or > 1000)
+            {
+                throw new ArgumentOutOfRangeException(nameof(columns), "Terminal columns and rows must be between 1 and 1000.");
+            }
+        }
+        else if (columns is not null || rows is not null)
+        {
+            throw new ArgumentException("Only terminal resize messages may contain dimensions.");
+        }
 
         Kind = kind;
         this.data = data?.ToArray();
+        Columns = columns;
+        Rows = rows;
     }
 
     public TaskControlKind Kind { get; }
 
     public byte[]? Data => data?.ToArray();
+
+    public int? Columns { get; }
+
+    public int? Rows { get; }
 }
 
 public sealed record TaskOutputSegment(

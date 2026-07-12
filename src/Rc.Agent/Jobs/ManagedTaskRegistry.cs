@@ -198,6 +198,13 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         return await registration.CloseStandardInputAsync(item.ControlPipeName, ControlTimeout, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<TaskRuntimeStatus> ResizeTerminalAsync(string jobId, int columns, int rows, CancellationToken cancellationToken = default)
+    {
+        if (columns is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(columns));
+        if (rows is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(rows));
+        var item = GetRunningTask(jobId);
+        return await registration.ResizeTerminalAsync(item.ControlPipeName, columns, rows, ControlTimeout, cancellationToken).ConfigureAwait(false);
+    }
     public async Task<TaskRuntimeStatus> CancelAsync(string jobId, CancellationToken cancellationToken = default)
     {
         await EnsureRecoveryAsync(cancellationToken).ConfigureAwait(false);
@@ -218,9 +225,15 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         }
 
         var stored = await stateStore.GetJobSnapshotAsync(jobId, cancellationToken).ConfigureAwait(false);
-        throw stored is null
-            ? new KeyNotFoundException($"No job exists with ID '{jobId}'.")
-            : new InvalidOperationException($"Job '{jobId}' is not active.");
+        if (stored is null)
+        {
+            throw new KeyNotFoundException($"No job exists with ID '{jobId}'.");
+        }
+        if (IsTerminal(stored.State))
+        {
+            return ToRuntimeStatus(stored);
+        }
+        throw new InvalidOperationException($"Job '{jobId}' is not active.");
     }
 
     public async Task<(TaskRuntimeStatus Status, bool Completed)> WaitAsync(string jobId, TimeSpan? timeout, CancellationToken cancellationToken = default)
@@ -347,6 +360,7 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         {
             var launch = new TaskLaunchRequest(jobId, execution, ExecutionIdentity.CurrentUser, stateStore.DataRoot, pendingItem.ControlPipeName, cancellationGrace);
             handle = await launcher.LaunchAsync(launch, schedulerToken).ConfigureAwait(false);
+            schedulerToken.ThrowIfCancellationRequested();
             var runningItem = new RunningTask(handle.ControlPipeName, handle.Completion, handle);
             running[jobId] = runningItem;
             pending.TryRemove(jobId, out _);

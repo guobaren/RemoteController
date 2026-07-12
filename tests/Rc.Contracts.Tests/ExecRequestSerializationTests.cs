@@ -18,7 +18,7 @@ public sealed class ExecRequestSerializationTests
         Assert.NotNull(directFactory);
 
         var argv = new[] { "tool.exe", "--display-name", "two words" };
-        var request = directFactory!.Invoke(null, [argv, null, null]);
+        var request = directFactory!.Invoke(null, [argv, null, null, null]);
         var json = JsonSerializer.Serialize(request, requestType!, ContractJson.Options);
         var roundTripped = JsonSerializer.Deserialize(json, requestType!, ContractJson.Options);
         var returnedArgv = (IReadOnlyList<string>?)requestType.GetProperty("DirectArgv")?.GetValue(roundTripped);

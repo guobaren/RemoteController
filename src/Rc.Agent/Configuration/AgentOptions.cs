@@ -8,13 +8,21 @@ public sealed record AgentOptions
 
     public Architecture RequiredArchitecture { get; init; } = Architecture.X64;
 
-    public int NormalTaskLimit { get; init; } = 8;
+    public int NormalTaskLimit { get; init; } = checked((int)ReadLong("RC_NORMAL_TASK_LIMIT", 8));
 
-    public int ElevatedTaskLimit { get; init; } = 2;
+    public int ElevatedTaskLimit { get; init; } = checked((int)ReadLong("RC_ELEVATED_TASK_LIMIT", 2));
 
-    public long LogQuotaBytes { get; init; } = 200L * 1024 * 1024;
+    public long LogQuotaBytes { get; init; } = ReadLong("RC_LOG_QUOTA_BYTES", 200L * 1024 * 1024);
 
-    public TimeSpan CancellationGrace { get; init; } = TimeSpan.FromSeconds(10);
+    public long AuditQuotaBytes { get; init; } = ReadLong("RC_AUDIT_QUOTA_BYTES", 16L * 1024 * 1024);
+
+    public int PairingFailureLimit { get; init; } = checked((int)ReadLong("RC_PAIRING_FAILURE_LIMIT", 5));
+
+    public TimeSpan PairingFailureWindow { get; init; } = TimeSpan.FromMinutes(5);
+
+    public TimeSpan PairingCooldown { get; init; } = TimeSpan.FromMinutes(15);
+
+    public TimeSpan CancellationGrace { get; init; } = TimeSpan.FromMilliseconds(ReadLong("RC_CANCELLATION_GRACE_MS", 10_000));
 
     public string FileRoot { get; init; } = Environment.GetEnvironmentVariable("RC_AGENT_FILE_ROOT")
         ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

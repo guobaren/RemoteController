@@ -78,7 +78,7 @@ public sealed class FileTransferServiceTests
         Assert.Equal("load", Encoding.UTF8.GetString(second.Chunk.Data));
         Assert.Equal(Convert.ToHexString(SHA256.HashData(first.Chunk.Data)), first.ChunkSha256);
         var tooLarge = new FileManifest("x", [new FileManifestEntry("x", 9, DateTimeOffset.UtcNow, new string('A', 64))]);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "x", "dest", tooLarge, 4)));
+        await Assert.ThrowsAsync<ResourceExhaustedException>(() => service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "x", "dest", tooLarge, 4)));
     }
 
     [Fact]
@@ -171,7 +171,7 @@ public sealed class FileTransferServiceTests
         await store.InitializeAsync();
         using var service = CreateService(store, directory.Path, atomicWriteLimit: 3);
 
-        await Assert.ThrowsAsync<ArgumentException>(() => service.WriteAsync(new FileWriteRequest("too-large.bin", [1, 2, 3, 4], true)));
+        await Assert.ThrowsAsync<ResourceExhaustedException>(() => service.WriteAsync(new FileWriteRequest("too-large.bin", [1, 2, 3, 4], true)));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReadAsync(new FileReadRequest("missing.bin", 0, 5)));
         var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, 1, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData([1]))) ]);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "dest.bin", manifest, 5)));

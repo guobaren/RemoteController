@@ -22,9 +22,9 @@ public sealed class ExecLaunchModeTests
         Assert.NotNull(directFactory);
         Assert.NotNull(shellFactory);
 
-        var direct = directFactory!.Invoke(null, [new List<string> { "tool.exe", "--name", "two words" }, null, null]);
+        var direct = directFactory!.Invoke(null, [new List<string> { "tool.exe", "--name", "two words" }, null, null, null]);
         var powerShell = Enum.Parse(shellKindType!, "PowerShell");
-        var shell = shellFactory!.Invoke(null, [powerShell, "Get-Process", null, null]);
+        var shell = shellFactory!.Invoke(null, [powerShell, "Get-Process", null, null, null]);
         var directJson = JsonSerializer.Serialize(direct, requestType, ContractJson.Options);
         var shellJson = JsonSerializer.Serialize(shell, requestType, ContractJson.Options);
 

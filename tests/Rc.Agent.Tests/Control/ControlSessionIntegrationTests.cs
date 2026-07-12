@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -70,6 +70,16 @@ public sealed class ControlSessionIntegrationTests
             Assert.Equal(challenge.SessionId, authenticated.SessionId);
             Assert.Empty(first.Jobs);
             Assert.Empty(second.Jobs);
+
+            await store.RemovePairedControllerAsync();
+            await writer.WriteLineAsync(JsonSerializer.Serialize(
+                new ControlJobListRequest(1, controllerId, null, []), ContractJson.Options));
+            var revokedLine = await reader.ReadLineAsync();
+            var revoked = JsonSerializer.Deserialize<ResultEnvelope<ControlJobListResponse>>(revokedLine!, ContractJson.Options);
+            Assert.NotNull(revoked);
+            Assert.False(revoked!.Ok);
+            Assert.Equal(ErrorCode.Unauthenticated, revoked.Error?.Code);
+            Assert.Contains(await store.ListAuditEventsAsync(), item => item.EventType == "session.revoked");
         }
         finally
         {
@@ -162,6 +172,58 @@ public sealed class ControlSessionIntegrationTests
 
             Assert.Equal(TransferSessionState.Completed, completed.Session.State);
             Assert.Equal(data, await File.ReadAllBytesAsync(Path.Combine(fileRoot, "uploaded.bin")));
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await listenerTask;
+        }
+    }
+    [Fact]
+    public async Task PersistedPairingCooldownBlocksPairStartAndWritesAudit()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        await store.RecordPairingFailureAsync(DateTimeOffset.UtcNow, TimeSpan.FromMinutes(5), 1, TimeSpan.FromMinutes(15));
+        var certificateManager = new AgentCertificateManager(store);
+        using var agentIdentity = await certificateManager.GetOrCreateAsync();
+        using var pairingCoordinator = new PairingCoordinator(store, certificateManager);
+        using var controllerKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var controllerRequest = new CertificateRequest("CN=blocked-pair-controller", controllerKey, HashAlgorithmName.SHA256);
+        using var controllerCertificate = controllerRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
+
+        var port = ReservePort();
+        await using var listener = new TlsControlListener(agentIdentity, store, pairingCoordinator, port);
+        await listener.InitializeAsync();
+        listener.Start();
+        using var cancellation = new CancellationTokenSource();
+        var listenerTask = listener.RunAsync(cancellation.Token);
+        try
+        {
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            await using var tls = new SslStream(client.GetStream(), false, (_, certificate, _, _) => certificate is not null);
+            await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = "localhost",
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+            });
+            using var reader = new StreamReader(tls, new UTF8Encoding(false), false, 1024 * 1024, leaveOpen: true);
+            await using var writer = new StreamWriter(tls, new UTF8Encoding(false), 1024 * 1024, leaveOpen: true) { AutoFlush = true };
+
+            await writer.WriteLineAsync(JsonSerializer.Serialize(
+                new ControlPairStartRequest(1, "blocked-controller", controllerCertificate.Export(X509ContentType.Cert)),
+                ContractJson.Options));
+            var line = await reader.ReadLineAsync();
+            var envelope = JsonSerializer.Deserialize<ResultEnvelope<ControlPairStartResponse>>(line!, ContractJson.Options);
+
+            Assert.NotNull(envelope);
+            Assert.False(envelope!.Ok);
+            Assert.Equal(ErrorCode.ResourceExhausted, envelope.Error!.Code);
+            var audit = await store.ListAuditEventsAsync();
+            Assert.Contains(audit, item => item.EventType == "pairing.blocked" && item.ErrorCode == ErrorCode.ResourceExhausted);
         }
         finally
         {

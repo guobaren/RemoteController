@@ -84,25 +84,81 @@
 - `.\.dotnet\dotnet.exe build .\Rc.RemoteController.sln -p:NuGetAudit=false --no-restore -v minimal`：通过，0 warnings / 0 errors。
 - `dotnet test .\tests\Rc.Agent.Tests\Rc.Agent.Tests.csproj -p:NuGetAudit=false --filter "FullyQualifiedName~AgentCertificateManagerTests|FullyQualifiedName~PairingCoordinatorTests|FullyQualifiedName~JpakePairingSessionTests" -v minimal`：8 通过。
 - `git diff --check`：通过（仅有 Git 的既有 LF/CRLF 提示）。
-- `.\.dotnet\dotnet.exe test .\Rc.RemoteController.sln -p:NuGetAudit=false --no-restore -v minimal`：177 项测试全部通过（Contracts 108、TaskHost 7、Agent 62）。
+- `.\.dotnet\dotnet.exe test .\Rc.RemoteController.sln -p:NuGetAudit=false --no-restore -v minimal`：192 项测试全部通过（Contracts 108、TaskHost 11、Agent 73）。
 - 完成上述构建和测试后，已停止 9 个仅由项目内 SDK 启动的 Roslyn/MSBuild 残留进程，并删除临时 SDK 目录 `E:\RemoteController\.dotnet`；系统当前只有 .NET Runtime、没有可用 SDK，因此后续构建需安装正式 SDK 或重新准备隔离工具链。
 - 新增 job 控制回归覆盖：签名字段防篡改、stdin/close-input、按偏移日志读取、等待超时与取消终态。
 - 新增调度/恢复回归覆盖：单并发排队、Queued 不重放、缺失 TaskHost 中断标记，以及真实独立 TaskHost 跨注册表重启后重连并完成。
 - 新增真实 TLS 会话回归：挑战签名绑定 session/challenge/expiry，同一 TLS 连接认证一次后连续执行两次无签名 job 请求。
 - 已在普通已登录 Windows 用户会话完成 TLS 回环配对与单次命令执行：命令的 stdout、stderr 和退出码 `7` 均正确返回。
 
-## 仍未接通或尚未完成产品验收的用户功能
+## 未完全实现功能的优先级
 
-- 本地安全 `unpair` 管理命令及活动认证会话失效；
-- 登录会话内可选 GUI 自动化；
-- UAC Broker、服务安装、开机自启、防火墙配置与卸载/修复；
-- 真正的 ConPTY/HPCON 终端启动与 Ctrl+C 语义；
-- 完整审计事件写入、配额压力测试，以及真实双机/双 VM 的 job 与文件传输验收；
-- 安装/运维/协议/安全文档、Windows CI 和 self-contained x64 发布包。
+以下排序只包含尚未完全实现的产品功能，不把当前缺少环境的双机/双 VM 测试算作功能阻塞项。优先级按安全边界、依赖关系和核心可用性排序。
+
+### P0：配对撤销、安全控制与审计
+
+1. **本地安全 `unpair` 与活动认证会话失效（已实现并通过本机 TLS 回归）**：`rc-agent unpair` 仅在被控端本地执行；删除配对时递增持久化 generation，旧邀请失效；认证会话和文件/任务请求每次重新核对当前控制器，取消配对后立即返回未认证。
+2. **持久化审计事件（核心路径已实现，继续做失败路径穷举审阅）**：SQLite 已持久化配对、认证、任务、文件/传输和取消配对事件，并记录控制器、目标、结果、时间、错误码及详情；审计配额会淘汰最旧事件。核心成功路径、撤销和文件操作失败已覆盖，仍需逐项检查所有异常分支是否都留下审计。
+3. **配对滥用防护（已实现核心策略）**：错误密码学轮次会持久化失败计数；达到阈值后进入冷却，`pair_start` 返回 `ResourceExhausted` 并写入不含秘密的审计；成功配对会重置失败状态。持久化状态和监听器阻断已有自动化测试，真实双机重复错误码压力测试后续补齐。
+4. **限额耗尽的产品行为（核心文件/传输与审计语义已实现）**：原子写入和 manifest 超限统一为 `ResourceExhausted`；Windows 磁盘满错误映射为 `ResourceExhausted`；失败操作写入审计；日志、审计和传输清理均有配额实现。仍需在可控磁盘不足环境中做故障注入，并复核 SQLite/日志写入失败时的最终一致性。
+
+P0 当前状态：核心产品功能已补齐并通过单机自动化；剩余项以异常分支穷举审阅和磁盘不足故障注入为主。真实双机/双 VM 验收仍按后续环境测试处理。
+
+### P1：真正的交互终端和任务语义
+
+1. **真正的 ConPTY/HPCON 任务启动（已实现并通过 Windows 测试）**：TaskHost 使用 `CreatePseudoConsole`、`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 和 `CreateProcessW` 启动真实伪终端；PTY 输出合并为 stdout，支持交互输入。
+2. **正确的 Ctrl+C 与终止升级（已实现并测试）**：取消先向 ConPTY 写入 Ctrl+C；进程在可配置宽限期内未退出时终止完整进程树。自动化同时覆盖 Ctrl+C 正常退出和忽略中断后的强杀回退。
+3. **终端尺寸与 resize（已实现并测试）**：执行契约支持初始列/行，控制协议和 CLI 支持 `job resize`，resize 签名绑定 job/列/行；测试覆盖 resize 后输出保留和非 PTY 任务稳定拒绝。
+4. **任务调度配置化和边界行为（核心边界已补齐）**：`RC_NORMAL_TASK_LIMIT`、`RC_ELEVATED_TASK_LIMIT` 和 `RC_CANCELLATION_GRACE_MS` 已接入；调度器会把取消令牌传递给已开始的工作。自动化已覆盖单并发严格 FIFO、普通/提权队列隔离、Queued 重复取消且不启动 TaskHost、自然退出后的取消幂等、无控制端读取时的大输出排空、TaskHost 突然退出后的持久化终态，以及重启恢复。仍需继续做高次数退出/取消竞争压力测试和更多 TaskHost 崩溃时点矩阵。
+
+P1 当前状态：ConPTY、Ctrl+C/强杀、resize 和主要调度边界已完成；剩余工作集中在高次数退出/取消竞争压力测试与更细的 TaskHost 崩溃时点矩阵。
+
+### P2：显式提权执行 Broker
+
+1. **Privileged Broker 本地 IPC**：实现受 ACL 和消息认证保护的 named pipe；Broker 不开放 TCP，非 Agent 本地进程不能伪造请求。
+2. **`exec --elevated` 和提权任务路由**：只有显式提权请求进入 Broker，普通任务始终使用普通调度器；任务元数据和审计记录实际执行身份。
+3. **独立 elevated 队列与并发限额**：与普通任务队列隔离，支持独立配置、排队、取消和恢复语义。
+
+### P3：服务化、安装、升级和卸载
+
+1. 安装 Agent 与 Privileged Broker Windows Service，配置服务账户、ACL、开机启动和故障恢复策略。
+2. 配置明确的 LAN 防火墙规则，不扩大监听范围或开放 Broker 本地接口。
+3. 提供幂等安装、修复、升级和卸载流程，清理服务、计划任务、防火墙规则和受控数据。
+4. 为安装脚本增加 `-WhatIf`、重复安装/卸载、部分失败恢复和升级测试。
+
+### P4：登录会话内 GUI 自动化
+
+1. 实现 UiAgent 在指定登录用户会话内启动、注册 session ID、显示器和能力版本。
+2. 实现显示器/窗口枚举、明确目标的截图、窗口激活/最小化/最大化/恢复/移动/关闭。
+3. 实现 UI Automation 元素树、鼠标、键盘、文本、快捷键和剪贴板操作。
+4. 严格限制到配置的活动登录会话；不支持 UAC 安全桌面；无会话、窗口关闭或显示器断开时返回稳定错误。
+
+### P5：CLI 契约、文档、CI 和发布
+
+1. **CLI 契约收口**：统一所有命令的 JSON 成功/失败 envelope、稳定错误码、非零失败退出码和不改变 DTO 的 `--text` 渲染。
+2. 补齐所有命令组的参数解析、冲突参数、Agent 不可用、认证失败和错误映射测试。
+3. 完成安装、运维、协议、安全、限额、恢复、取消配对、提权和 GUI 限制文档。
+4. 建立 Windows CI，执行 restore、build、单元测试、契约测试和可条件启用的 Windows 集成测试。
+5. 生成 self-contained Windows x64 产物，校验 Agent、CLI、TaskHost、Broker 和 UiAgent 发布文件完整后再创建版本。
+
+推荐功能实现顺序：`unpair`/会话失效 → 完整审计 → 配对滥用防护与限额错误语义 → ConPTY/Ctrl+C/resize → Broker/elevated 队列 → 服务安装 → GUI → CLI 契约收口 → 文档、CI 和发布。
+
+## 后续补齐的环境验收
+
+当前暂无可用双机或双 VM 环境，以下项目标记为**环境具备后补齐的测试**，不阻塞上述单机可开发功能：
+
+- 真实网络下重复执行配对、错误码、过期码、`unpair` 后重配和 J-PAKE 稳定性验证；
+- 控制端断开/重连、Agent 重启、并发长期任务和日志 offset 恢复；
+- 大文件、多文件目录和空目录传输，以及上传/下载中断续传；
+- 分块或最终内容被改变时拒绝完成；
+- 网络延迟、反复中断、配额耗尽和磁盘不足场景；
+- Broker、Windows Service、GUI 和完整发布流程实现后的端到端验收。
+
+环境具备后应执行完整双机/双 VM 发布门禁；在此之前，继续通过隔离目录、本机 TLS 回环、独立 TaskHost 进程和自动化故障注入扩大覆盖，但不能将这些替代测试表述为真实双机验收。
 
 ## 下一里程碑
 
-认证会话、长期任务和文件传输改动已在 `6be9ca6` 提交；下一步补齐本地 `unpair`、任务/文件审计与配额压力测试，并执行真实双机/双 VM 网络验收。Broker、GUI、安装器和发布工作在这些核心闭环稳定后继续。
+认证会话、长期任务和文件传输改动已在 `6be9ca6` 提交。P0 核心能力与 P1 的 ConPTY/Ctrl+C/resize、FIFO、Queued 取消幂等、慢消费者和 TaskHost 突然退出收敛已在当前工作树实现并通过单机自动化；下一项是高次数退出/取消竞争压力测试、更细的 TaskHost 崩溃时点矩阵，同时继续审阅 P0 的异常审计及磁盘不足一致性。真实双机/双 VM 验收待测试环境具备后补齐。开始下一轮开发前需安装正式 .NET 8 SDK 或重新准备隔离工具链。
 
 ## 2026-07-10 本机回环验证
 

@@ -30,5 +30,11 @@ public sealed class JobControlAuthenticationTests
         var wait = ControlRequestAuthentication.SignJobWait("agent", "controller", "job", TimeSpan.FromSeconds(1), key);
         Assert.True(ControlRequestAuthentication.VerifyJobWait("agent", "controller", "job", TimeSpan.FromSeconds(1), wait, key));
         Assert.False(ControlRequestAuthentication.VerifyJobWait("agent", "controller", "job", TimeSpan.FromSeconds(2), wait, key));
+
+        var resize = ControlRequestAuthentication.SignJobResize("agent", "controller", "job", 120, 30, key);
+        Assert.True(ControlRequestAuthentication.VerifyJobResize("agent", "controller", "job", 120, 30, resize, key));
+        Assert.False(ControlRequestAuthentication.VerifyJobResize("agent", "controller", "job", 121, 30, resize, key));
+        Assert.False(ControlRequestAuthentication.VerifyJobResize("agent", "controller", "job", 120, 31, resize, key));
+        Assert.False(ControlRequestAuthentication.VerifyJobCancel("agent", "controller", "job", resize, key));
     }
 }

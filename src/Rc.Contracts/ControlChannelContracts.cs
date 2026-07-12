@@ -36,6 +36,7 @@ public static class ControlMessageKinds
     public const string JobCloseInput = "job_close_input";
     public const string JobCancel = "job_cancel";
     public const string JobWait = "job_wait";
+    public const string JobResize = "job_resize";
 public const string FileManifest = "file_manifest";
     public const string FileList = "file_list";
     public const string FileStat = "file_stat";
@@ -205,6 +206,16 @@ public sealed record ControlJobWaitRequest(int ProtocolVersion, string Controlle
     public string Kind => ControlMessageKinds.JobWait;
 }
 
+public sealed record ControlJobResizeRequest(
+    int ProtocolVersion,
+    string ControllerId,
+    string JobId,
+    int Columns,
+    int Rows,
+    byte[] Signature)
+{
+    public string Kind => ControlMessageKinds.JobResize;
+}
 public sealed record ControlJobOperationResponse(TaskRuntimeStatus Status, bool Completed);
 public sealed record ControlFileManifestRequest(int ProtocolVersion, string ControllerId, FileManifestRequest Request) { public string Kind => ControlMessageKinds.FileManifest; }
 public sealed record ControlFileListRequest(int ProtocolVersion, string ControllerId, FileListRequest Request) { public string Kind => ControlMessageKinds.FileList; }

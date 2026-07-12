@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Sockets;
 using System.Net.Security;
 using System.Security.Authentication;
@@ -33,6 +33,7 @@ public sealed class TlsControlListener : IAsyncDisposable
     private readonly SemaphoreSlim executeOnceGate = new(1, 1);
     private readonly ManagedTaskRegistry taskRegistry;
     private readonly FileTransferService fileService;
+    private readonly AgentOptions options;
     private bool started;
 
     public TlsControlListener(
@@ -53,8 +54,9 @@ public sealed class TlsControlListener : IAsyncDisposable
         this.identity = identity;
         this.stateStore = stateStore;
         this.pairingCoordinator = pairingCoordinator;
-        taskRegistry = new ManagedTaskRegistry(stateStore, normalConcurrency: 8, launcher: new ExternalTaskHostLauncher());
-        fileService = new FileTransferService(stateStore, options);
+        this.options = options ?? new AgentOptions();
+        taskRegistry = new ManagedTaskRegistry(stateStore, this.options.NormalTaskLimit, new ExternalTaskHostLauncher(), this.options.CancellationGrace);
+        fileService = new FileTransferService(stateStore, this.options);
         listener = new TcpListener(IPAddress.Any, port);
     }
 
@@ -157,10 +159,10 @@ public sealed class TlsControlListener : IAsyncDisposable
                             await HandlePairStartAsync(client, document.RootElement, writer, cancellationToken);
                             break;
                         case ControlMessageKinds.PairRound1:
-                            await HandlePairRound1Async(document.RootElement, writer);
+                            await HandlePairRound1Async(document.RootElement, writer, cancellationToken);
                             break;
                         case ControlMessageKinds.PairRound2:
-                            await HandlePairRound2Async(document.RootElement, writer);
+                            await HandlePairRound2Async(document.RootElement, writer, cancellationToken);
                             break;
                         case ControlMessageKinds.PairComplete:
                             await HandlePairCompleteAsync(document.RootElement, writer, cancellationToken);
@@ -191,6 +193,9 @@ public sealed class TlsControlListener : IAsyncDisposable
                             break;
                         case ControlMessageKinds.JobWait:
                             await HandleJobWaitAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
+                            break;
+                        case ControlMessageKinds.JobResize:
+                            await HandleJobResizeAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
                             break;
                         case ControlMessageKinds.FileManifest:
                         case ControlMessageKinds.FileList:
@@ -286,6 +291,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
         if (pending.ExpiresAtUtc <= DateTimeOffset.UtcNow)
         {
+            await AuditAsync("session.authentication_failed", pending.ControllerId, pending.SessionId.ToString("N"), false, ErrorCode.Unauthenticated, new Dictionary<string, string> { ["reason"] = "expired" }, cancellationToken).ConfigureAwait(false);
             await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "The control session challenge expired.");
             return null;
         }
@@ -293,6 +299,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         var paired = await stateStore.GetPairedControllerAsync(cancellationToken).ConfigureAwait(false);
         if (paired is null || !string.Equals(paired.ControllerId, request.ControllerId, StringComparison.Ordinal))
         {
+            await AuditAsync("session.authentication_failed", request.ControllerId, request.SessionId.ToString("N"), false, ErrorCode.Unauthenticated, new Dictionary<string, string> { ["reason"] = "pairing_unavailable" }, cancellationToken).ConfigureAwait(false);
             await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "The paired controller is unavailable for session authentication.");
             return null;
         }
@@ -305,11 +312,13 @@ public sealed class TlsControlListener : IAsyncDisposable
             if (publicKey is null || !ControlRequestAuthentication.VerifySessionAuthentication(
                     identity.DeviceId, request.ControllerId, pending.SessionId, pending.Challenge, pending.ExpiresAtUtc, request.Signature, publicKey))
             {
+                await AuditAsync("session.authentication_failed", request.ControllerId, request.SessionId.ToString("N"), false, ErrorCode.Unauthorized, new Dictionary<string, string> { ["reason"] = "signature" }, cancellationToken).ConfigureAwait(false);
                 await WriteFailureAsync(writer, ErrorCode.Unauthorized, "The control session signature is invalid.");
                 return null;
             }
 
             var authenticated = new AuthenticatedControlSession(pending.SessionId, pending.ControllerId, pending.ExpiresAtUtc);
+            await AuditAsync("session.authenticated", authenticated.ControllerId, authenticated.SessionId.ToString("N"), true, null, null, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlSessionAuthenticateResponse(authenticated.SessionId, authenticated.ControllerId, authenticated.ExpiresAtUtc));
             return authenticated;
         }
@@ -334,6 +343,15 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
+        var pairingSecurity = await stateStore.GetPairingSecurityStateAsync(cancellationToken).ConfigureAwait(false);
+        if (pairingSecurity.BlockedUntilUtc is { } blockedUntil && blockedUntil > DateTimeOffset.UtcNow)
+        {
+            await AuditAsync("pairing.blocked", request.ControllerId, null, false, ErrorCode.ResourceExhausted,
+                new Dictionary<string, string> { ["blockedUntilUtc"] = blockedUntil.ToString("O") }, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.ResourceExhausted, "Pairing is temporarily unavailable after repeated failed attempts.");
+            return;
+        }
+
         if (client.Client.LocalEndPoint is not IPEndPoint localEndpoint)
         {
             await WriteFailureAsync(writer, ErrorCode.Unavailable, "The agent could not determine its local pairing endpoint.");
@@ -349,10 +367,11 @@ public sealed class TlsControlListener : IAsyncDisposable
         var binding = await pairingCoordinator.BindControllerAsync(
             invitation.PairingId, request.ControllerId, request.ControllerCertificate, cancellationToken);
         var agentRound1 = pairingCoordinator.CreateAgentRound1(invitation.PairingId);
+        await AuditAsync("pairing.started", request.ControllerId, invitation.PairingId.ToString("N"), true, null, null, cancellationToken).ConfigureAwait(false);
         await WriteSuccessAsync(writer, new ControlPairStartResponse(ToContract(binding), invitation.ExpiresAtUtc, agentRound1));
     }
 
-    private async Task HandlePairRound1Async(JsonElement root, StreamWriter writer)
+    private async Task HandlePairRound1Async(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
     {
         var request = root.Deserialize<ControlPairRound1Request>(ContractJson.Options);
         if (request is null)
@@ -368,6 +387,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
         catch (CryptographicException exception)
         {
+            await RecordPairingFailureAsync("round1", request.PairingId, cancellationToken).ConfigureAwait(false);
             await WriteFailureAsync(writer, ErrorCode.Unauthenticated, $"Pairing validation failed while receiving controller round 1: {exception.Message}");
         }
         catch (InvalidOperationException exception)
@@ -376,7 +396,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
     }
 
-    private async Task HandlePairRound2Async(JsonElement root, StreamWriter writer)
+    private async Task HandlePairRound2Async(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
     {
         var request = root.Deserialize<ControlPairRound2Request>(ContractJson.Options);
         if (request is null)
@@ -392,6 +412,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
         catch (CryptographicException exception)
         {
+            await RecordPairingFailureAsync("round2", request.PairingId, cancellationToken).ConfigureAwait(false);
             await WriteFailureAsync(writer, ErrorCode.Unauthenticated, $"Pairing validation failed while receiving controller round 2: {exception.Message}");
         }
         catch (InvalidOperationException exception)
@@ -416,10 +437,13 @@ public sealed class TlsControlListener : IAsyncDisposable
                 request.PairingId,
                 new PairingCompletionProof(request.ConfirmationMac, request.CertificateSignature),
                 cancellationToken);
+            await stateStore.ResetPairingFailuresAsync(cancellationToken).ConfigureAwait(false);
+            await AuditAsync("pairing.completed", paired.ControllerId, request.PairingId.ToString("N"), true, null, null, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlPairCompleteResponse(paired.ControllerId, paired.PairedAtUtc));
         }
         catch (CryptographicException exception)
         {
+            await RecordPairingFailureAsync("round3", request.PairingId, cancellationToken).ConfigureAwait(false);
             await WriteFailureAsync(writer, ErrorCode.Unauthenticated, $"Pairing validation failed while receiving controller round 3: {exception.Message}");
         }
         catch (InvalidOperationException exception)
@@ -477,6 +501,7 @@ public sealed class TlsControlListener : IAsyncDisposable
 
             var standardOutput = await ReadOutputAsync(jobId, JobOutputKind.Stdout, cancellationToken);
             var standardError = await ReadOutputAsync(jobId, JobOutputKind.Stderr, cancellationToken);
+            await AuditAsync("job.exec_once", request.ControllerId, jobId, true, null, null, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlExecuteOnceResponse(
                 status.Job,
                 standardOutput,
@@ -526,6 +551,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         try
         {
             var status = await taskRegistry.StartAsync(request.Execution, cancellationToken).ConfigureAwait(false);
+            await AuditAsync("job.started", request.ControllerId, status.Job.JobId, true, null, null, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlJobStartResponse(status));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -657,7 +683,7 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        await HandleActiveJobOperationAsync(request.JobId, writer,
+        await HandleActiveJobOperationAsync("job.input", request.ControllerId, request.JobId, writer,
             () => taskRegistry.WriteStandardInputAsync(request.JobId, request.Data, cancellationToken), cancellationToken).ConfigureAwait(false);
     }
 
@@ -677,7 +703,7 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        await HandleActiveJobOperationAsync(request.JobId, writer,
+        await HandleActiveJobOperationAsync("job.input_closed", request.ControllerId, request.JobId, writer,
             () => taskRegistry.CloseStandardInputAsync(request.JobId, cancellationToken), cancellationToken).ConfigureAwait(false);
     }
 
@@ -697,7 +723,7 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        await HandleActiveJobOperationAsync(request.JobId, writer,
+        await HandleActiveJobOperationAsync("job.cancelled", request.ControllerId, request.JobId, writer,
             () => taskRegistry.CancelAsync(request.JobId, cancellationToken), cancellationToken).ConfigureAwait(false);
     }
 
@@ -728,6 +754,25 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
     }
 
+    private async Task HandleJobResizeAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlJobResizeRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || string.IsNullOrWhiteSpace(request.JobId) || request.Columns is < 1 or > 1000 || request.Rows is < 1 or > 1000)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The job resize request is invalid.");
+            return;
+        }
+
+        if (!await VerifyPairedControllerRequestAsync(session, request.ControllerId, request.Signature,
+                key => ControlRequestAuthentication.VerifyJobResize(identity.DeviceId, request.ControllerId, request.JobId, request.Columns, request.Rows, request.Signature, key),
+                writer, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        await HandleActiveJobOperationAsync("job.resized", request.ControllerId, request.JobId, writer,
+            () => taskRegistry.ResizeTerminalAsync(request.JobId, request.Columns, request.Rows, cancellationToken), cancellationToken).ConfigureAwait(false);
+    }
     private async Task HandleFileRequestAsync(string kind, JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
     {
         try
@@ -735,25 +780,25 @@ public sealed class TlsControlListener : IAsyncDisposable
             switch (kind)
             {
                 case ControlMessageKinds.FileManifest:
-                    { var r = root.Deserialize<ControlFileManifestRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.GetManifestAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlFileManifestRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.GetManifestAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.FileList:
-                    { var r = root.Deserialize<ControlFileListRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.ListAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlFileListRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.ListAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.FileStat:
-                    { var r = root.Deserialize<ControlFileStatRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.StatAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlFileStatRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.StatAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.FileRead:
-                    { var r = root.Deserialize<ControlFileReadRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.ReadAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlFileReadRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.ReadAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.FileWrite:
-                    { var r = root.Deserialize<ControlFileWriteRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.WriteAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlFileWriteRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.WriteAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.TransferStart:
-                    { var r = root.Deserialize<ControlTransferStartRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.StartTransferAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlTransferStartRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.StartTransferAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.TransferWriteChunk:
-                    { var r = root.Deserialize<ControlTransferWriteChunkRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.WriteChunkAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlTransferWriteChunkRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.WriteChunkAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.TransferReadChunk:
-                    { var r = root.Deserialize<ControlTransferReadChunkRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.ReadChunkAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlTransferReadChunkRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.ReadChunkAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.TransferComplete:
-                    { var r = root.Deserialize<ControlTransferCompleteRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.CompleteAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlTransferCompleteRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.CompleteAsync(r!.Request, cancellationToken), cancellationToken); break; }
                 case ControlMessageKinds.TransferStatus:
-                    { var r = root.Deserialize<ControlTransferStatusRequest>(ContractJson.Options); await ExecuteFileAsync(r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.StatusAsync(r!.Request, cancellationToken)); break; }
+                    { var r = root.Deserialize<ControlTransferStatusRequest>(ContractJson.Options); await ExecuteFileAsync(kind, r?.ProtocolVersion, r?.ControllerId, session, writer, () => fileService.StatusAsync(r!.Request, cancellationToken), cancellationToken); break; }
             }
         }
         catch (KeyNotFoundException exception) { await WriteFailureAsync(writer, ErrorCode.NotFound, exception.Message); }
@@ -765,7 +810,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         { await WriteFailureAsync(writer, ErrorCode.InvalidRequest, exception.Message); }
     }
 
-    private static async Task ExecuteFileAsync<T>(int? protocolVersion, string? controllerId, AuthenticatedControlSession? session, StreamWriter writer, Func<Task<T>> operation)
+    private async Task ExecuteFileAsync<T>(string operationKind, int? protocolVersion, string? controllerId, AuthenticatedControlSession? session, StreamWriter writer, Func<Task<T>> operation, CancellationToken cancellationToken)
     {
         if (protocolVersion != 1 || string.IsNullOrWhiteSpace(controllerId))
         {
@@ -774,16 +819,52 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
         if (session is null || session.ExpiresAtUtc <= DateTimeOffset.UtcNow || !string.Equals(session.ControllerId, controllerId, StringComparison.Ordinal))
         {
+            await AuditAsync("file." + operationKind, controllerId, null, false, ErrorCode.Unauthenticated, null, cancellationToken).ConfigureAwait(false);
             await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "An authenticated control session is required for file operations.");
             return;
         }
-        await WriteSuccessAsync(writer, await operation().ConfigureAwait(false));
+        var paired = await stateStore.GetPairedControllerAsync(cancellationToken).ConfigureAwait(false);
+        if (paired is null || !string.Equals(paired.ControllerId, session.ControllerId, StringComparison.Ordinal))
+        {
+            await AuditAsync("file." + operationKind, controllerId, null, false, ErrorCode.Unauthenticated, new Dictionary<string, string> { ["reason"] = "unpaired" }, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "The authenticated control session was revoked by a local unpair operation.");
+            return;
+        }
+        try
+        {
+            var result = await operation().ConfigureAwait(false);
+            await AuditAsync("file." + operationKind, controllerId, null, true, null, null, cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, result);
+        }
+        catch (Exception exception)
+        {
+            var errorCode = MapFileOperationError(exception);
+            await AuditAsync("file." + operationKind, controllerId, null, false, errorCode, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, errorCode, exception.Message);
+        }
     }
-    private async Task HandleActiveJobOperationAsync(string jobId, StreamWriter writer, Func<Task<TaskRuntimeStatus>> operation, CancellationToken cancellationToken)
+    private static ErrorCode MapFileOperationError(Exception exception) => exception switch
+    {
+        KeyNotFoundException or FileNotFoundException or DirectoryNotFoundException => ErrorCode.NotFound,
+        UnauthorizedAccessException => ErrorCode.Unauthorized,
+        ResourceExhaustedException => ErrorCode.ResourceExhausted,
+        IOException ioException when IsDiskFull(ioException) => ErrorCode.ResourceExhausted,
+        InvalidOperationException => ErrorCode.FailedPrecondition,
+        ArgumentException or InvalidDataException or IOException => ErrorCode.InvalidRequest,
+        _ => ErrorCode.Internal,
+    };
+
+    private static bool IsDiskFull(IOException exception)
+    {
+        var win32Error = exception.HResult & 0xFFFF;
+        return win32Error is 0x27 or 0x70;
+    }
+    private async Task HandleActiveJobOperationAsync(string eventType, string controllerId, string jobId, StreamWriter writer, Func<Task<TaskRuntimeStatus>> operation, CancellationToken cancellationToken)
     {
         try
         {
             var status = await operation().ConfigureAwait(false);
+            await AuditAsync(eventType, controllerId, jobId, true, null, null, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlJobOperationResponse(status, IsTerminal(status.Job.State)));
         }
         catch (InvalidOperationException exception)
@@ -820,6 +901,13 @@ public sealed class TlsControlListener : IAsyncDisposable
             if (!string.Equals(session.ControllerId, controllerId, StringComparison.Ordinal))
             {
                 await WriteFailureAsync(writer, ErrorCode.Unauthorized, "The request controller does not match the authenticated session.");
+                return false;
+            }
+            var currentPairing = await stateStore.GetPairedControllerAsync(cancellationToken).ConfigureAwait(false);
+            if (currentPairing is null || !string.Equals(currentPairing.ControllerId, session.ControllerId, StringComparison.Ordinal))
+            {
+                await AuditAsync("session.revoked", session.ControllerId, session.SessionId.ToString("N"), false, ErrorCode.Unauthenticated, null, cancellationToken).ConfigureAwait(false);
+                await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "The authenticated control session was revoked by a local unpair operation.");
                 return false;
             }
             return true;
@@ -866,6 +954,46 @@ public sealed class TlsControlListener : IAsyncDisposable
         {
             CryptographicOperations.ZeroMemory(certificateBytes);
         }
+    }
+    private async Task RecordPairingFailureAsync(string stage, Guid pairingId, CancellationToken cancellationToken)
+    {
+        var state = await stateStore.RecordPairingFailureAsync(
+            DateTimeOffset.UtcNow,
+            options.PairingFailureWindow,
+            options.PairingFailureLimit,
+            options.PairingCooldown,
+            cancellationToken).ConfigureAwait(false);
+        var details = new Dictionary<string, string>
+        {
+            ["stage"] = stage,
+            ["failureCount"] = state.FailureCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
+        if (state.BlockedUntilUtc is { } blockedUntil)
+        {
+            details["blockedUntilUtc"] = blockedUntil.ToString("O");
+        }
+        await AuditAsync("pairing.failed", null, pairingId.ToString("N"), false, ErrorCode.Unauthenticated, details, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task AuditAsync(
+        string eventType,
+        string? controllerId,
+        string? targetId,
+        bool succeeded,
+        ErrorCode? errorCode,
+        IReadOnlyDictionary<string, string>? details,
+        CancellationToken cancellationToken)
+    {
+        await stateStore.AppendAuditEventAsync(new AgentAuditEvent(
+            Guid.NewGuid().ToString("N"),
+            DateTimeOffset.UtcNow,
+            eventType,
+            controllerId,
+            targetId,
+            succeeded,
+            errorCode,
+            details), cancellationToken).ConfigureAwait(false);
+        await stateStore.EnforceAuditQuotaAsync(options.AuditQuotaBytes, cancellationToken).ConfigureAwait(false);
     }
     private async Task<byte[]> ReadOutputAsync(string jobId, JobOutputKind stream, CancellationToken cancellationToken)
     {

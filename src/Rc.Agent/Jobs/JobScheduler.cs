@@ -1,4 +1,4 @@
-using System.Threading.Channels;
+﻿using System.Threading.Channels;
 using Rc.Contracts;
 
 namespace Rc.Agent.Jobs;
@@ -26,14 +26,13 @@ public sealed class JobScheduler : IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(identity));
         }
 
-        var item = new WorkItem(work);
+        var item = new WorkItem(work, cancellationToken);
         var queue = identity == ExecutionIdentity.ElevatedBroker ? elevatedQueue.Writer : normalQueue.Writer;
         if (!queue.TryWrite(item))
         {
             throw new InvalidOperationException("The job scheduler is stopping.");
         }
 
-        cancellationToken.Register(() => item.Completion.TrySetCanceled(cancellationToken));
         return item.Completion.Task;
     }
 
@@ -41,15 +40,21 @@ public sealed class JobScheduler : IAsyncDisposable
     {
         await foreach (var item in reader.ReadAllAsync(stopping.Token).ConfigureAwait(false))
         {
-            if (item.Completion.Task.IsCompleted)
+            if (item.CancellationToken.IsCancellationRequested)
             {
+                item.Completion.TrySetCanceled(item.CancellationToken);
                 continue;
             }
 
+            using var executionCancellation = CancellationTokenSource.CreateLinkedTokenSource(stopping.Token, item.CancellationToken);
             try
             {
-                await item.Work(stopping.Token).ConfigureAwait(false);
+                await item.Work(executionCancellation.Token).ConfigureAwait(false);
                 item.Completion.TrySetResult();
+            }
+            catch (OperationCanceledException) when (item.CancellationToken.IsCancellationRequested)
+            {
+                item.Completion.TrySetCanceled(item.CancellationToken);
             }
             catch (OperationCanceledException) when (stopping.IsCancellationRequested)
             {
@@ -77,9 +82,10 @@ public sealed class JobScheduler : IAsyncDisposable
         stopping.Dispose();
     }
 
-    private sealed class WorkItem(Func<CancellationToken, Task> work)
+    private sealed class WorkItem(Func<CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         public Func<CancellationToken, Task> Work { get; } = work;
+        public CancellationToken CancellationToken { get; } = cancellationToken;
         public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

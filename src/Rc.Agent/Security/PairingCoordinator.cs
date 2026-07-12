@@ -332,6 +332,8 @@ public sealed class PairingCoordinator : IDisposable
         try
         {
             PurgeExpired();
+            var securityState = await stateStore.GetPairingSecurityStateAsync(cancellationToken);
+            PurgeRevoked(securityState.Generation);
             await ThrowIfPairedAsync(cancellationToken);
             if (!invitations.IsEmpty)
             {
@@ -352,7 +354,8 @@ public sealed class PairingCoordinator : IDisposable
                 certificateFingerprint,
                 spkiFingerprint,
                 expiresAtUtc,
-                options.MaxFailedAttempts);
+                options.MaxFailedAttempts,
+                securityState.Generation);
             if (!invitations.TryAdd(pairingId, state))
             {
                 state.Dispose();
@@ -389,6 +392,8 @@ public sealed class PairingCoordinator : IDisposable
         try
         {
             PurgeExpired();
+            var securityState = await stateStore.GetPairingSecurityStateAsync(cancellationToken);
+            PurgeRevoked(securityState.Generation);
             await ThrowIfPairedAsync(cancellationToken);
             var state = GetActiveInvitation(pairingId);
             lock (state.Sync)
@@ -481,6 +486,12 @@ public sealed class PairingCoordinator : IDisposable
             try
             {
                 PurgeExpired();
+                var securityState = await stateStore.GetPairingSecurityStateAsync(cancellationToken);
+                if (state.Generation != securityState.Generation)
+                {
+                    RemoveInvitation(pairingId, state);
+                    throw new InvalidOperationException("The pairing invitation was revoked by a local unpair operation.");
+                }
                 if (!await stateStore.TrySavePairedControllerIfNoneAsync(pairedController, cancellationToken))
                 {
                     throw new InvalidOperationException("A controller is already paired with this agent.");
@@ -611,6 +622,17 @@ public sealed class PairingCoordinator : IDisposable
         }
 
         return state;
+    }
+
+    private void PurgeRevoked(long generation)
+    {
+        foreach (var entry in invitations)
+        {
+            if (entry.Value.Generation != generation)
+            {
+                RemoveInvitation(entry.Key, entry.Value);
+            }
+        }
     }
 
     private void RemoveInvitation(Guid pairingId, PairingState expected)
@@ -764,7 +786,8 @@ public sealed class PairingCoordinator : IDisposable
             byte[] agentCertificateFingerprint,
             byte[] agentSpkiFingerprint,
             DateTimeOffset expiresAtUtc,
-            int maxFailedAttempts)
+            int maxFailedAttempts,
+            long generation)
         {
             PairingId = pairingId;
             this.oneTimeCode = oneTimeCode;
@@ -774,6 +797,7 @@ public sealed class PairingCoordinator : IDisposable
             AgentSpkiFingerprint = agentSpkiFingerprint;
             ExpiresAtUtc = expiresAtUtc;
             MaxFailedAttempts = maxFailedAttempts;
+            Generation = generation;
         }
 
         public object Sync { get; } = new();
@@ -791,6 +815,8 @@ public sealed class PairingCoordinator : IDisposable
         public DateTimeOffset ExpiresAtUtc { get; }
 
         public int MaxFailedAttempts { get; }
+
+        public long Generation { get; }
 
         public int FailedAttempts { get; set; }
 

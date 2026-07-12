@@ -14,6 +14,7 @@ public sealed class TaskHostRunner : IAsyncDisposable
     private readonly TaskHostSegmentWriter segmentWriter;
     private readonly SemaphoreSlim standardInputGate = new(1, 1);
     private Process? process;
+    private PseudoConsoleProcess? pseudoConsole;
     private JobState state = JobState.Queued;
     private DateTimeOffset createdAtUtc = DateTimeOffset.UtcNow;
     private DateTimeOffset? startedAtUtc;
@@ -152,6 +153,7 @@ public sealed class TaskHostRunner : IAsyncDisposable
 
         lifetimeCancellation.Dispose();
         standardInputGate.Dispose();
+        pseudoConsole?.Dispose();
         process?.Dispose();
     }
 
@@ -177,8 +179,11 @@ public sealed class TaskHostRunner : IAsyncDisposable
 
             started.TrySetResult();
             var pipeTask = ServeControlPipeAsync(lifetimeCancellation.Token);
-            var stdoutTask = CaptureOutputAsync(startedProcess.StandardOutput.BaseStream, JobOutputKind.Stdout, CancellationToken.None);
-            var stderrTask = CaptureOutputAsync(startedProcess.StandardError.BaseStream, JobOutputKind.Stderr, CancellationToken.None);
+            var terminalProcess = pseudoConsole;
+            var stdoutTask = CaptureOutputAsync(terminalProcess?.Output ?? startedProcess.StandardOutput.BaseStream, JobOutputKind.Stdout, CancellationToken.None);
+            var stderrTask = terminalProcess is null
+                ? CaptureOutputAsync(startedProcess.StandardError.BaseStream, JobOutputKind.Stderr, CancellationToken.None)
+                : Task.CompletedTask;
 
             try
             {
@@ -190,6 +195,11 @@ public sealed class TaskHostRunner : IAsyncDisposable
                 await startedProcess.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             }
 
+            if (terminalProcess is not null)
+            {
+                await Task.Delay(100, CancellationToken.None).ConfigureAwait(false);
+                terminalProcess.CloseConsole();
+            }
             await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
             lock (stateGate)
             {
@@ -228,6 +238,12 @@ public sealed class TaskHostRunner : IAsyncDisposable
 
     private Process StartProcess()
     {
+        if (request.Execution.Terminal is { } terminal)
+        {
+            pseudoConsole = PseudoConsoleProcess.Start(request.Execution, terminal, request.Environment);
+            return pseudoConsole.Process;
+        }
+
         var startInfo = BuildStartInfo();
         var startedProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         if (!startedProcess.Start())
@@ -403,6 +419,9 @@ public sealed class TaskHostRunner : IAsyncDisposable
             case TaskControlKind.Cancel:
                 await CancelAsync(cancellationToken).ConfigureAwait(false);
                 break;
+            case TaskControlKind.ResizeTerminal:
+                ResizeTerminal(message.Columns!.Value, message.Rows!.Value);
+                break;
             case TaskControlKind.GetStatus:
                 break;
             default:
@@ -433,8 +452,9 @@ public sealed class TaskHostRunner : IAsyncDisposable
                 throw new InvalidOperationException("The task is not running.");
             }
 
-            await runningProcess.StandardInput.BaseStream.WriteAsync(data, cancellationToken).ConfigureAwait(false);
-            await runningProcess.StandardInput.BaseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            var input = pseudoConsole?.Input ?? runningProcess.StandardInput.BaseStream;
+            await input.WriteAsync(data, cancellationToken).ConfigureAwait(false);
+            await input.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -455,7 +475,14 @@ public sealed class TaskHostRunner : IAsyncDisposable
                 }
 
                 standardInputClosed = true;
-                process?.StandardInput.Close();
+                if (pseudoConsole is not null)
+                {
+                    pseudoConsole.Input.Close();
+                }
+                else
+                {
+                    process?.StandardInput.Close();
+                }
             }
         }
         finally
@@ -469,8 +496,9 @@ public sealed class TaskHostRunner : IAsyncDisposable
         await standardInputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await runningProcess.StandardInput.BaseStream.WriteAsync(new byte[] { 3 }, cancellationToken).ConfigureAwait(false);
-            await runningProcess.StandardInput.BaseStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            var input = pseudoConsole?.Input ?? runningProcess.StandardInput.BaseStream;
+            await input.WriteAsync(new byte[] { 3 }, cancellationToken).ConfigureAwait(false);
+            await input.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (IOException)
         {
@@ -486,6 +514,11 @@ public sealed class TaskHostRunner : IAsyncDisposable
         }
     }
 
+    private void ResizeTerminal(int columns, int rows)
+    {
+        var terminal = pseudoConsole ?? throw new InvalidOperationException("The task was not started with a pseudo console.");
+        terminal.Resize(columns, rows);
+    }
     private static void ApplyEnvironment(IDictionary<string, string?> destination, IReadOnlyDictionary<string, string>? source)
     {
         if (source is null)

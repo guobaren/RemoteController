@@ -1,4 +1,4 @@
-﻿using System.Security.AccessControl;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using Microsoft.Data.Sqlite;
 using Rc.Agent.Persistence;
@@ -17,6 +17,7 @@ public sealed class SchemaMigrationTests
         "output_segments",
         "transfer_sessions",
         "audit_events",
+        "pairing_security_state",
     ];
 
     [Fact]

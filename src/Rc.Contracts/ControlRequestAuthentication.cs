@@ -22,6 +22,7 @@ public static class ControlRequestAuthentication
     private static readonly byte[] JobCloseInputDomain = "RemoteController/job_close_input/v1"u8.ToArray();
     private static readonly byte[] JobCancelDomain = "RemoteController/job_cancel/v1"u8.ToArray();
     private static readonly byte[] JobWaitDomain = "RemoteController/job_wait/v1"u8.ToArray();
+    private static readonly byte[] JobResizeDomain = "RemoteController/job_resize/v1"u8.ToArray();
 
     public static byte[] SignSessionAuthentication(
         string agentDeviceId,
@@ -94,6 +95,11 @@ public static class ControlRequestAuthentication
 
     public static bool VerifyJobWait(string agentDeviceId, string controllerId, string jobId, TimeSpan? timeout, ReadOnlySpan<byte> signature, ECDsa publicKey) =>
         Verify(JobWaitDomain, agentDeviceId, controllerId, new JobWaitPayload(jobId, timeout), signature, publicKey);
+    public static byte[] SignJobResize(string agentDeviceId, string controllerId, string jobId, int columns, int rows, ECDsa privateKey) =>
+        Sign(JobResizeDomain, agentDeviceId, controllerId, new JobResizePayload(jobId, columns, rows), privateKey);
+
+    public static bool VerifyJobResize(string agentDeviceId, string controllerId, string jobId, int columns, int rows, ReadOnlySpan<byte> signature, ECDsa publicKey) =>
+        Verify(JobResizeDomain, agentDeviceId, controllerId, new JobResizePayload(jobId, columns, rows), signature, publicKey);
     private static byte[] Sign<T>(byte[] domain, string agentDeviceId, string controllerId, T payload, ECDsa privateKey)
     {
         ArgumentNullException.ThrowIfNull(privateKey);
@@ -160,4 +166,5 @@ public static class ControlRequestAuthentication
     private sealed record JobLogsPayload(string JobId, JobOutputKind Stream, long AfterOffset, int MaximumBytes);
     private sealed record JobInputPayload(string JobId, byte[] Data);
     private sealed record JobWaitPayload(string JobId, TimeSpan? Timeout);
+    private sealed record JobResizePayload(string JobId, int Columns, int Rows);
 }

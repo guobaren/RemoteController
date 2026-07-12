@@ -158,6 +158,32 @@ public sealed partial class AgentStateStore : IAsyncDisposable
         recordFourthVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
         await recordFourthVersion.ExecuteNonQueryAsync(cancellationToken);
         fourthTransaction.Commit();
+
+        using var fifthTransaction = connection.BeginTransaction();
+        var securityMigration = connection.CreateCommand();
+        securityMigration.Transaction = fifthTransaction;
+        securityMigration.CommandText = """
+            CREATE INDEX IF NOT EXISTS ix_audit_events_occurred_at_utc
+                ON audit_events(occurred_at_utc, event_id);
+            CREATE TABLE IF NOT EXISTS pairing_security_state (
+                id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+                failure_count INTEGER NOT NULL,
+                window_started_at_utc TEXT NULL,
+                blocked_until_utc TEXT NULL,
+                generation INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT OR IGNORE INTO pairing_security_state (
+                id, failure_count, window_started_at_utc, blocked_until_utc, generation)
+            VALUES (1, 0, NULL, NULL, 0);
+            """;
+        await securityMigration.ExecuteNonQueryAsync(cancellationToken);
+
+        var recordFifthVersion = connection.CreateCommand();
+        recordFifthVersion.Transaction = fifthTransaction;
+        recordFifthVersion.CommandText = "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc) VALUES (5, $appliedAtUtc);";
+        recordFifthVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+        await recordFifthVersion.ExecuteNonQueryAsync(cancellationToken);
+        fifthTransaction.Commit();
     }
 
     public async Task SaveJobSnapshotAsync(JobSnapshot snapshot, CancellationToken cancellationToken = default)

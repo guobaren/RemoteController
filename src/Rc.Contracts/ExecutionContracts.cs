@@ -11,6 +11,20 @@ public enum ShellKind
 
 public sealed record ShellLaunch(ShellKind Kind, string Command);
 
+public sealed record TerminalOptions
+{
+    public TerminalOptions(int columns = 120, int rows = 30)
+    {
+        if (columns is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(columns));
+        if (rows is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(rows));
+        Columns = columns;
+        Rows = rows;
+    }
+
+    public int Columns { get; }
+    public int Rows { get; }
+}
+
 public sealed class ExecRequest
 {
     private readonly IReadOnlyList<string>? directArgv;
@@ -22,7 +36,8 @@ public sealed class ExecRequest
         ShellLaunch? shell,
         string? workingDirectory,
         IReadOnlyDictionary<string, string>? environment,
-        ExecutionIdentity executionIdentity = ExecutionIdentity.CurrentUser)
+        ExecutionIdentity executionIdentity = ExecutionIdentity.CurrentUser,
+        TerminalOptions? terminal = null)
     {
         if ((directArgv is null) == (shell is null))
         {
@@ -43,6 +58,7 @@ public sealed class ExecRequest
         Shell = shell;
         WorkingDirectory = workingDirectory;
         ExecutionIdentity = executionIdentity;
+        Terminal = terminal;
         this.environment = environment is null
             ? null
             : new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(environment, StringComparer.Ordinal));
@@ -63,11 +79,15 @@ public sealed class ExecRequest
 
     public IReadOnlyDictionary<string, string>? Environment => environment;
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TerminalOptions? Terminal { get; }
+
     public static ExecRequest ForDirectArgv(
         IEnumerable<string> directArgv,
         string? workingDirectory = null,
-        IReadOnlyDictionary<string, string>? environment = null) =>
-        new(directArgv.ToArray(), null, workingDirectory, environment);
+        IReadOnlyDictionary<string, string>? environment = null,
+        TerminalOptions? terminal = null) =>
+        new(directArgv.ToArray(), null, workingDirectory, environment, terminal: terminal);
 
     public static ExecRequest ForDirectArgvWithIdentity(
         IEnumerable<string> directArgv,
@@ -80,8 +100,9 @@ public sealed class ExecRequest
         ShellKind kind,
         string command,
         string? workingDirectory = null,
-        IReadOnlyDictionary<string, string>? environment = null) =>
-        new(null, new ShellLaunch(kind, command), workingDirectory, environment);
+        IReadOnlyDictionary<string, string>? environment = null,
+        TerminalOptions? terminal = null) =>
+        new(null, new ShellLaunch(kind, command), workingDirectory, environment, terminal: terminal);
 
     public static ExecRequest ForShellWithIdentity(
         ShellKind kind,

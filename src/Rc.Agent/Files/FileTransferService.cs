@@ -46,7 +46,7 @@ public sealed class FileTransferService : IDisposable
 
     public async Task<FileWriteResponse> WriteAsync(FileWriteRequest request, CancellationToken cancellationToken = default)
     {
-        if (request.Data.Length > options.MaximumAtomicWriteBytes) throw new ArgumentException("Atomic write exceeds the configured limit.", nameof(request));
+        if (request.Data.Length > options.MaximumAtomicWriteBytes) throw new ResourceExhaustedException("Atomic write exceeds the configured byte limit.");
         var path = paths.Resolve(request.Path);
         var parent = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(parent);
@@ -249,7 +249,7 @@ public sealed class FileTransferService : IDisposable
     private void EnsureQuota(FileManifest manifest)
     {
         var total = manifest.Entries.Where(e => e.Sha256 is not null).Sum(e => e.Length);
-        if (total > options.TransferQuotaBytes) throw new InvalidOperationException("Transfer exceeds the configured byte quota.");
+        if (total > options.TransferQuotaBytes) throw new ResourceExhaustedException("Transfer exceeds the configured byte quota.");
     }
 
     private static FileManifestEntry FindFileEntry(FileManifest manifest, string relativePath) =>

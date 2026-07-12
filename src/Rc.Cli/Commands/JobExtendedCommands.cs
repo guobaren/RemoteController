@@ -21,6 +21,7 @@ internal static class JobExtendedCommands
     public static Task<int> CloseInputAsync(string[] args, TextWriter output, TextWriter error) => RunAsync("close-input", args, output, error);
     public static Task<int> CancelAsync(string[] args, TextWriter output, TextWriter error) => RunAsync("cancel", args, output, error);
     public static Task<int> WaitAsync(string[] args, TextWriter output, TextWriter error) => RunAsync("wait", args, output, error);
+    public static Task<int> ResizeAsync(string[] args, TextWriter output, TextWriter error) => RunAsync("resize", args, output, error);
 
     private static async Task<int> RunAsync(string operation, string[] args, TextWriter output, TextWriter error)
     {
@@ -70,6 +71,7 @@ internal static class JobExtendedCommands
                 "close-input" => new ControlJobCloseInputRequest(1, connection.ControllerId, options.JobId!, []),
                 "cancel" => new ControlJobCancelRequest(1, connection.ControllerId, options.JobId!, []),
                 "wait" => new ControlJobWaitRequest(1, connection.ControllerId, options.JobId!, options.Timeout, []),
+                "resize" => new ControlJobResizeRequest(1, connection.ControllerId, options.JobId!, options.Columns, options.Rows, []),
                 _ => throw new InvalidOperationException("Unsupported job operation."),
             };
             var operationResponse = await connection.SendAsync<ControlJobOperationResponse>(request);
@@ -147,6 +149,22 @@ internal static class JobExtendedCommands
                     }
                     options.Timeout = TimeSpan.FromMilliseconds(timeoutMs);
                     break;
+                case "--cols" when operation == "resize" && index + 1 < args.Length:
+                    if (!int.TryParse(args[++index], NumberStyles.None, CultureInfo.InvariantCulture, out var columns) || columns is < 1 or > 1000)
+                    {
+                        error = "--cols must be between 1 and 1000.";
+                        return false;
+                    }
+                    options.Columns = columns;
+                    break;
+                case "--rows" when operation == "resize" && index + 1 < args.Length:
+                    if (!int.TryParse(args[++index], NumberStyles.None, CultureInfo.InvariantCulture, out var rows) || rows is < 1 or > 1000)
+                    {
+                        error = "--rows must be between 1 and 1000.";
+                        return false;
+                    }
+                    options.Rows = rows;
+                    break;
                 case "--follow" when operation == "logs":
                     options.Follow = true;
                     break;
@@ -168,7 +186,7 @@ internal static class JobExtendedCommands
         return true;
     }
 
-    private static string Usage() => "Usage: rcctl job logs|input|close-input|cancel|wait <IP:port> --fingerprint <SHA256> --job <jobId> [operation options] [--follow] [--text]";
+    private static string Usage() => "Usage: rcctl job logs|input|close-input|cancel|wait|resize <IP:port> --fingerprint <SHA256> --job <jobId> [operation options] [--follow] [--text]";
 
     private static string? NormalizeFingerprint(string value)
     {
@@ -186,6 +204,8 @@ internal static class JobExtendedCommands
         public int MaximumBytes { get; set; } = DefaultMaximumBytes;
         public string? Data { get; set; }
         public TimeSpan? Timeout { get; set; }
+        public int Columns { get; set; } = 120;
+        public int Rows { get; set; } = 30;
         public bool Follow { get; set; }
         public bool Text { get; set; }
     }

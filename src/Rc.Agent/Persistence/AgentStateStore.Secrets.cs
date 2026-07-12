@@ -239,8 +239,42 @@ public sealed partial class AgentStateStore
     public async Task RemovePairedControllerAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM paired_controller WHERE id = 1;";
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        using var transaction = connection.BeginTransaction();
+        string? controllerId;
+        await using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT controller_id FROM paired_controller WHERE id = 1;";
+            controllerId = (string?)await read.ExecuteScalarAsync(cancellationToken);
+        }
+        await using (var remove = connection.CreateCommand())
+        {
+            remove.Transaction = transaction;
+            remove.CommandText = "DELETE FROM paired_controller WHERE id = 1;";
+            await remove.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var revoke = connection.CreateCommand())
+        {
+            revoke.Transaction = transaction;
+            revoke.CommandText = "UPDATE pairing_security_state SET generation = generation + 1 WHERE id = 1;";
+            await revoke.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var audit = connection.CreateCommand())
+        {
+            audit.Transaction = transaction;
+            audit.CommandText = "INSERT INTO audit_events (event_id, occurred_at_utc, event_type, detail_json) VALUES ($eventId, $occurredAtUtc, 'pairing.unpaired', $detailJson);";
+            audit.Parameters.AddWithValue("$eventId", Guid.NewGuid().ToString("N"));
+            audit.Parameters.AddWithValue("$occurredAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+            audit.Parameters.AddWithValue("$detailJson", System.Text.Json.JsonSerializer.Serialize(new
+            {
+                ControllerId = controllerId,
+                TargetId = controllerId,
+                Succeeded = true,
+                ErrorCode = (string?)null,
+                Details = new Dictionary<string, string> { ["source"] = "local" },
+            }, Rc.Contracts.ContractJson.Options));
+            await audit.ExecuteNonQueryAsync(cancellationToken);
+        }
+        transaction.Commit();
     }
 }

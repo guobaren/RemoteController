@@ -13,6 +13,12 @@ Console.CancelKeyPress += (_, eventArgs) =>
 
 var dataRoot = Environment.GetEnvironmentVariable("RC_AGENT_DATA_ROOT")
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "RemoteController");
+var localAdminResult = await LocalAdminCommand.TryRunAsync(args, dataRoot, Console.Out, Console.Error, cancellation.Token);
+if (localAdminResult is { } exitCode)
+{
+    return exitCode;
+}
+
 var displayName = Environment.GetEnvironmentVariable("RC_AGENT_DISPLAY_NAME") ?? Environment.MachineName;
 var tcpPort = ReadTcpPort();
 
@@ -48,6 +54,8 @@ finally
     cancellation.Cancel();
     await controlListenerTask;
 }
+
+return 0;
 
 static int ReadTcpPort()
 {
