@@ -366,7 +366,10 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         var preserveRegistration = false;
         try
         {
-            var launch = new TaskLaunchRequest(jobId, execution, execution.ExecutionIdentity, stateStore.DataRoot, pendingItem.ControlPipeName, cancellationGrace, maximumOutputBytes: maximumOutputBytes);
+            var controlClientSid = execution.ExecutionIdentity == ExecutionIdentity.ElevatedBroker
+                ? System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value
+                : null;
+            var launch = new TaskLaunchRequest(jobId, execution, execution.ExecutionIdentity, stateStore.DataRoot, pendingItem.ControlPipeName, cancellationGrace, maximumOutputBytes: maximumOutputBytes, controlClientSid: controlClientSid);
             var selectedLauncher = execution.ExecutionIdentity == ExecutionIdentity.ElevatedBroker ? elevatedLauncher : normalLauncher;
             handle = await selectedLauncher.LaunchAsync(launch, schedulerToken).ConfigureAwait(false);
             schedulerToken.ThrowIfCancellationRequested();

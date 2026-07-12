@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using Rc.Contracts;
 
@@ -367,18 +369,54 @@ public sealed class TaskHostRunner : IAsyncDisposable
         }
     }
 
+    private NamedPipeServerStream CreateControlPipeServer()
+    {
+        if (string.IsNullOrWhiteSpace(request.ControlClientSid))
+        {
+            return new NamedPipeServerStream(
+                request.ControlPipeName,
+                PipeDirection.InOut,
+                1,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        }
+
+        var security = new PipeSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new PipeAccessRule(
+            WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("The TaskHost account SID is unavailable."),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(request.ControlClientSid),
+            PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        return NamedPipeServerStreamAcl.Create(
+            request.ControlPipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous,
+            0,
+            0,
+            security);
+    }
     private async Task ServeControlPipeAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                using var server = new NamedPipeServerStream(
-                    request.ControlPipeName,
-                    PipeDirection.InOut,
-                    1,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+
+                using var server = CreateControlPipeServer();
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
                 var message = await TaskHostPipeProtocol.ReadAsync<TaskControlMessage>(server, cancellationToken).ConfigureAwait(false);
                 var response = await HandleControlMessageSafelyAsync(message).ConfigureAwait(false);
@@ -673,7 +711,7 @@ public static class TaskHostControlClient
     {
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeout);
-        await using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        await using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await client.ConnectAsync(timeoutSource.Token).ConfigureAwait(false);
         await TaskHostPipeProtocol.WriteAsync(client, message, timeoutSource.Token).ConfigureAwait(false);
         return await TaskHostPipeProtocol.ReadAsync<TaskControlResponse>(client, timeoutSource.Token).ConfigureAwait(false);

@@ -1,4 +1,4 @@
-﻿using System.Security.AccessControl;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 
@@ -6,14 +6,20 @@ namespace Rc.PrivilegedBroker;
 
 public static class BrokerSecretStore
 {
-    public static async Task<byte[]> LoadOrCreateAsync(string path, CancellationToken cancellationToken = default)
+    public static async Task<byte[]> LoadOrCreateAsync(string path, string? clientSid = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         path = Path.GetFullPath(path);
         if (File.Exists(path))
         {
             var existing = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-            return existing.Length >= 32 ? existing : throw new InvalidDataException("The broker secret is shorter than 32 bytes.");
+            if (existing.Length < 32)
+            {
+                throw new InvalidDataException("The broker secret is shorter than 32 bytes.");
+            }
+
+            RestrictAcl(path, clientSid);
+            return existing;
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -29,14 +35,14 @@ public static class BrokerSecretStore
         catch (IOException) when (File.Exists(path))
         {
             CryptographicOperations.ZeroMemory(secret);
-            return await LoadOrCreateAsync(path, cancellationToken).ConfigureAwait(false);
+            return await LoadOrCreateAsync(path, clientSid, cancellationToken).ConfigureAwait(false);
         }
 
-        RestrictAcl(path);
+        RestrictAcl(path, clientSid);
         return secret;
     }
 
-    private static void RestrictAcl(string path)
+    private static void RestrictAcl(string path, string? clientSid)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -48,6 +54,10 @@ public static class BrokerSecretStore
         var security = new FileSecurity();
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(currentUser, FileSystemRights.FullControl, AccessControlType.Allow));
+        if (!string.IsNullOrWhiteSpace(clientSid))
+        {
+            security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(clientSid), FileSystemRights.Read, AccessControlType.Allow));
+        }
         security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), FileSystemRights.FullControl, AccessControlType.Allow));
         security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), FileSystemRights.FullControl, AccessControlType.Allow));
         new FileInfo(path).SetAccessControl(security);

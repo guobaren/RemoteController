@@ -6,5 +6,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Rc.Contracts\Rc.Contracts.csproj" />
     <ProjectReference Include="..\Rc.TaskHost\Rc.TaskHost.csproj" />
+    <ProjectReference Include="..\Rc.WindowsService\Rc.WindowsService.csproj" />
   </ItemGroup>
 </Project>

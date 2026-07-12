@@ -22,7 +22,8 @@ public sealed class TaskLaunchRequest
         string controlPipeName,
         TimeSpan cancellationGracePeriod,
         IReadOnlyDictionary<string, string>? environment = null,
-        long maximumOutputBytes = 200L * 1024 * 1024)
+        long maximumOutputBytes = 200L * 1024 * 1024,
+        string? controlClientSid = null)
     {
         if (string.IsNullOrWhiteSpace(jobId))
         {
@@ -54,6 +55,7 @@ public sealed class TaskLaunchRequest
         ControlPipeName = controlPipeName;
         CancellationGracePeriod = cancellationGracePeriod;
         MaximumOutputBytes = maximumOutputBytes;
+        ControlClientSid = string.IsNullOrWhiteSpace(controlClientSid) ? null : controlClientSid;
         this.environment = environment is null
             ? null
             : new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(environment, StringComparer.Ordinal));
@@ -72,6 +74,8 @@ public sealed class TaskLaunchRequest
     public TimeSpan CancellationGracePeriod { get; }
 
     public long MaximumOutputBytes { get; }
+
+    public string? ControlClientSid { get; }
 
     public IReadOnlyDictionary<string, string>? Environment => environment;
 }

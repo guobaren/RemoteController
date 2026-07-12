@@ -1,4 +1,4 @@
-﻿using System.Security.AccessControl;
+using System.Security.AccessControl;
 using System.Security.Principal;
 
 namespace Rc.Agent.Security;
@@ -10,11 +10,12 @@ public static class AgentDataDirectoryAclValidator
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         var currentUser = WindowsIdentity.GetCurrent().User
             ?? throw new InvalidOperationException("The current Windows user SID is unavailable.");
+        var configuredTrustedSids = ReadConfiguredTrustedSids();
         if (!Directory.Exists(dataRoot))
         {
             var directory = new DirectoryInfo(dataRoot);
             directory.Create();
-            directory.SetAccessControl(CreateSafeDirectorySecurity(currentUser));
+            directory.SetAccessControl(CreateSafeDirectorySecurity(currentUser, configuredTrustedSids));
         }
 
         var trustedSids = new HashSet<SecurityIdentifier>
@@ -23,6 +24,7 @@ public static class AgentDataDirectoryAclValidator
             new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
             new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
         };
+        trustedSids.UnionWith(configuredTrustedSids);
         var security = new DirectoryInfo(dataRoot).GetAccessControl(AccessControlSections.Access);
         var rules = security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
             .OfType<FileSystemAccessRule>();
@@ -46,31 +48,50 @@ public static class AgentDataDirectoryAclValidator
         }
     }
 
-    private static DirectorySecurity CreateSafeDirectorySecurity(SecurityIdentifier currentUser)
+    private static IReadOnlyList<SecurityIdentifier> ReadConfiguredTrustedSids()
+    {
+        var configured = Environment.GetEnvironmentVariable("RC_AGENT_TRUSTED_SIDS");
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return [];
+        }
+
+        try
+        {
+            return configured.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(value => new SecurityIdentifier(value))
+                .ToArray();
+        }
+        catch (ArgumentException exception)
+        {
+            throw new InvalidOperationException("RC_AGENT_TRUSTED_SIDS contains an invalid Windows SID.", exception);
+        }
+    }
+
+    private static DirectorySecurity CreateSafeDirectorySecurity(
+        SecurityIdentifier currentUser,
+        IReadOnlyList<SecurityIdentifier> additionalTrustedSids)
     {
         var security = new DirectorySecurity();
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        var descendants = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
-        security.AddAccessRule(new FileSystemAccessRule(
-            currentUser,
-            FileSystemRights.FullControl,
-            descendants,
-            PropagationFlags.None,
-            AccessControlType.Allow));
-        security.AddAccessRule(new FileSystemAccessRule(
-            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-            FileSystemRights.FullControl,
-            descendants,
-            PropagationFlags.None,
-            AccessControlType.Allow));
-        security.AddAccessRule(new FileSystemAccessRule(
-            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-            FileSystemRights.FullControl,
-            descendants,
-            PropagationFlags.None,
-            AccessControlType.Allow));
+        AddFullControl(security, currentUser);
+        AddFullControl(security, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+        AddFullControl(security, new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
+        foreach (var sid in additionalTrustedSids)
+        {
+            AddFullControl(security, sid);
+        }
         return security;
     }
+
+    private static void AddFullControl(DirectorySecurity security, SecurityIdentifier sid) =>
+        security.AddAccessRule(new FileSystemAccessRule(
+            sid,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
 
     private static bool GrantsWrite(FileSystemRights rights)
     {

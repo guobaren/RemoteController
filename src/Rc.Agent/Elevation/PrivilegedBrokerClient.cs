@@ -1,4 +1,4 @@
-﻿using System.IO.Pipes;
+using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -36,7 +36,7 @@ public sealed class PrivilegedBrokerClient
                 ".",
                 pipeName,
                 PipeDirection.InOut,
-                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                PipeOptions.Asynchronous);
             await pipe.ConnectAsync(5000, cancellationToken).ConfigureAwait(false);
             using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };

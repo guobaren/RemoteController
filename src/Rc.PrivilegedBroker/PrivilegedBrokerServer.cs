@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Security.Cryptography;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -38,12 +40,8 @@ public sealed class PrivilegedBrokerServer : IAsyncDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, stopping.Token);
         while (!linked.IsCancellationRequested)
         {
-            var server = new NamedPipeServerStream(
-                options.PipeName,
-                PipeDirection.InOut,
-                NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.WriteThrough);
+
+            var server = CreatePipeServer();
             try
             {
                 await server.WaitForConnectionAsync(linked.Token).ConfigureAwait(false);
@@ -57,6 +55,46 @@ public sealed class PrivilegedBrokerServer : IAsyncDisposable
         }
     }
 
+    private NamedPipeServerStream CreatePipeServer()
+    {
+        if (string.IsNullOrWhiteSpace(options.ClientSid))
+        {
+            return new NamedPipeServerStream(
+                options.PipeName,
+                PipeDirection.InOut,
+                NamedPipeServerStream.MaxAllowedServerInstances,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.WriteThrough);
+        }
+
+        var security = new PipeSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new PipeAccessRule(
+            WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("The broker account SID is unavailable."),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(options.ClientSid),
+            PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        return NamedPipeServerStreamAcl.Create(
+            options.PipeName,
+            PipeDirection.InOut,
+            NamedPipeServerStream.MaxAllowedServerInstances,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.WriteThrough,
+            0,
+            0,
+            security);
+    }
     private async Task HandleConnectionAndDisposeAsync(NamedPipeServerStream server, CancellationToken cancellationToken)
     {
         using (server)

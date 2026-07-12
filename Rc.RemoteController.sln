@@ -1,4 +1,4 @@
-﻿Microsoft Visual Studio Solution File, Format Version 12.00
+Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
@@ -23,6 +23,8 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{17D07E46-48DA-49C9-BCF7-D03A1D98C0D2}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.PrivilegedBroker.Tests", "tests\Rc.PrivilegedBroker.Tests\Rc.PrivilegedBroker.Tests.csproj", "{51B2F931-F6B7-46E6-A353-8B5FA31314F4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.WindowsService", "src\Rc.WindowsService\Rc.WindowsService.csproj", "{D94B3C96-4578-4C21-9424-8F3E485AAB9F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -70,6 +72,11 @@ Global
 		{51B2F931-F6B7-46E6-A353-8B5FA31314F4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{51B2F931-F6B7-46E6-A353-8B5FA31314F4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{51B2F931-F6B7-46E6-A353-8B5FA31314F4}.Release|Any CPU.Build.0 = Release|Any CPU
+
+		{D94B3C96-4578-4C21-9424-8F3E485AAB9F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D94B3C96-4578-4C21-9424-8F3E485AAB9F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D94B3C96-4578-4C21-9424-8F3E485AAB9F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D94B3C96-4578-4C21-9424-8F3E485AAB9F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

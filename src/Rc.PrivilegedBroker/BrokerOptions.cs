@@ -1,4 +1,4 @@
-﻿using System.Security.Principal;
+using System.Security.Principal;
 
 namespace Rc.PrivilegedBroker;
 
@@ -7,7 +7,8 @@ public sealed record BrokerOptions(
     string SecretPath,
     string AllowedDataRoot,
     int Concurrency,
-    bool AllowUnelevatedForTesting)
+    bool AllowUnelevatedForTesting,
+    string? ClientSid = null)
 {
     public static BrokerOptions FromEnvironment()
     {
@@ -46,7 +47,8 @@ public sealed record BrokerOptions(
             Path.GetFullPath(secretPath),
             Path.GetFullPath(allowedRoot),
             concurrency,
-            string.Equals(Environment.GetEnvironmentVariable("RC_BROKER_ALLOW_UNELEVATED"), "1", StringComparison.Ordinal));
+            string.Equals(Environment.GetEnvironmentVariable("RC_BROKER_ALLOW_UNELEVATED"), "1", StringComparison.Ordinal),
+            Environment.GetEnvironmentVariable("RC_BROKER_CLIENT_SID"));
     }
 }
 

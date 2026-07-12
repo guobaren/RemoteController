@@ -1,4 +1,4 @@
-﻿using System.Security.AccessControl;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using Rc.Agent.Persistence;
 using Rc.Agent.Security;
@@ -9,6 +9,7 @@ namespace Rc.Agent.Tests.Security;
 
 public sealed class AgentDataDirectoryAclValidatorTests
 {
+    private const string TrustedSidsVariable = "RC_AGENT_TRUSTED_SIDS";
     [Fact]
     public void EnsureSafeRejectsAnExplicitWriteRuleForAnUntrustedPrincipal()
     {
@@ -113,4 +114,40 @@ public sealed class AgentDataDirectoryAclValidatorTests
         AgentDataDirectoryAclValidator.EnsureSafe(directory.Path);
     }
 
+    [Fact]
+    public void EnsureSafeAllowsWritePermissionForAConfiguredTrustedSid()
+    {
+        using var directory = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable(TrustedSidsVariable);
+        var worldSid = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+        try
+        {
+            Environment.SetEnvironmentVariable(TrustedSidsVariable, worldSid.Value);
+            var security = new DirectoryInfo(directory.Path).GetAccessControl();
+            security.AddAccessRule(new FileSystemAccessRule(worldSid, FileSystemRights.WriteData, AccessControlType.Allow));
+            new DirectoryInfo(directory.Path).SetAccessControl(security);
+            AgentDataDirectoryAclValidator.EnsureSafe(directory.Path);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(TrustedSidsVariable, previous);
+        }
+    }
+
+    [Fact]
+    public void EnsureSafeRejectsMalformedConfiguredTrustedSid()
+    {
+        using var directory = new TemporaryDirectory();
+        var previous = Environment.GetEnvironmentVariable(TrustedSidsVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(TrustedSidsVariable, "not-a-sid");
+            var exception = Assert.Throws<InvalidOperationException>(() => AgentDataDirectoryAclValidator.EnsureSafe(directory.Path));
+            Assert.Contains(TrustedSidsVariable, exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(TrustedSidsVariable, previous);
+        }
+    }
 }
