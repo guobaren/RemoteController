@@ -14,7 +14,9 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
     private readonly AgentStateStore stateStore;
     private readonly TaskHostRegistration registration;
     private readonly JobScheduler scheduler;
-    private readonly IManagedTaskHostLauncher launcher;
+    private readonly IManagedTaskHostLauncher normalLauncher;
+    private readonly IManagedTaskHostLauncher elevatedLauncher;
+    private readonly long maximumOutputBytes;
     private readonly TimeSpan cancellationGrace;
     private readonly ConcurrentDictionary<string, PendingTask> pending = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, RunningTask> running = new(StringComparer.Ordinal);
@@ -26,21 +28,27 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         AgentStateStore stateStore,
         int normalConcurrency = 8,
         IManagedTaskHostLauncher? launcher = null,
-        TimeSpan? cancellationGrace = null)
+        TimeSpan? cancellationGrace = null,
+        int elevatedConcurrency = 2,
+        IManagedTaskHostLauncher? elevatedLauncher = null,
+        long maximumOutputBytes = 200L * 1024 * 1024)
     {
         this.stateStore = stateStore ?? throw new ArgumentNullException(nameof(stateStore));
         registration = new TaskHostRegistration(stateStore);
-        scheduler = new JobScheduler(normalConcurrency, elevatedConcurrency: 2);
-        this.launcher = launcher ?? new InProcessTaskHostLauncher();
+        scheduler = new JobScheduler(normalConcurrency, elevatedConcurrency);
+        normalLauncher = launcher ?? new InProcessTaskHostLauncher();
+        this.elevatedLauncher = elevatedLauncher ?? new UnavailableElevatedTaskHostLauncher();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumOutputBytes);
+        this.maximumOutputBytes = maximumOutputBytes;
         this.cancellationGrace = cancellationGrace ?? TimeSpan.FromSeconds(10);
     }
 
     public async Task<TaskRuntimeStatus> StartAsync(ExecRequest execution, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(execution);
-        if (execution.ExecutionIdentity != ExecutionIdentity.CurrentUser)
+        if (!Enum.IsDefined(execution.ExecutionIdentity))
         {
-            throw new InvalidOperationException("Only current-user jobs are supported by this task registry.");
+            throw new ArgumentOutOfRangeException(nameof(execution), "The execution identity is invalid.");
         }
 
         await EnsureRecoveryAsync(cancellationToken).ConfigureAwait(false);
@@ -48,7 +56,7 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         var pipeName = "rc-job-" + Guid.NewGuid().ToString("N");
         var createdAt = DateTimeOffset.UtcNow;
         var queued = new TaskRuntimeStatus(
-            new JobSnapshot(jobId, JobState.Queued, null, createdAt, null, null, null),
+            new JobSnapshot(jobId, JobState.Queued, null, createdAt, null, null, null, execution.ExecutionIdentity),
             null, null, null, null, 0, 0, null);
         await stateStore.SaveJobSnapshotAsync(queued.Job, cancellationToken).ConfigureAwait(false);
         await stateStore.SaveTaskHostRegistrationAsync(new TaskHostRegistrationInfo(jobId, pipeName, null, createdAt), cancellationToken).ConfigureAwait(false);
@@ -62,7 +70,7 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         }
 
         item.Lifetime = scheduler.EnqueueAsync(
-            ExecutionIdentity.CurrentUser,
+            execution.ExecutionIdentity,
             token => RunScheduledAsync(jobId, execution, item, token),
             cancellation.Token);
         _ = ObservePendingAsync(jobId, item);
@@ -321,7 +329,7 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
                         await PersistTerminalAsync(status, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
-                    ScheduleRecoveredHost(host);
+                    ScheduleRecoveredHost(host, snapshot.ExecutionIdentity);
                 }
                 catch (Exception exception) when (exception is IOException or TimeoutException or InvalidOperationException or OperationCanceledException && !cancellationToken.IsCancellationRequested)
                 {
@@ -358,14 +366,15 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         var preserveRegistration = false;
         try
         {
-            var launch = new TaskLaunchRequest(jobId, execution, ExecutionIdentity.CurrentUser, stateStore.DataRoot, pendingItem.ControlPipeName, cancellationGrace);
-            handle = await launcher.LaunchAsync(launch, schedulerToken).ConfigureAwait(false);
+            var launch = new TaskLaunchRequest(jobId, execution, execution.ExecutionIdentity, stateStore.DataRoot, pendingItem.ControlPipeName, cancellationGrace, maximumOutputBytes: maximumOutputBytes);
+            var selectedLauncher = execution.ExecutionIdentity == ExecutionIdentity.ElevatedBroker ? elevatedLauncher : normalLauncher;
+            handle = await selectedLauncher.LaunchAsync(launch, schedulerToken).ConfigureAwait(false);
             schedulerToken.ThrowIfCancellationRequested();
             var runningItem = new RunningTask(handle.ControlPipeName, handle.Completion, handle);
             running[jobId] = runningItem;
             pending.TryRemove(jobId, out _);
             await stateStore.SaveTaskHostRegistrationAsync(new TaskHostRegistrationInfo(jobId, handle.ControlPipeName, handle.ProcessId, DateTimeOffset.UtcNow), schedulerToken).ConfigureAwait(false);
-            var started = await WaitForTaskHostAsync(handle.ControlPipeName, schedulerToken).ConfigureAwait(false);
+            var started = handle.InitialStatus ?? await WaitForTaskHostAsync(handle.ControlPipeName, schedulerToken).ConfigureAwait(false);
             await PersistAsync(started, schedulerToken).ConfigureAwait(false);
 
             TaskRuntimeStatus terminal;
@@ -394,9 +403,11 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
             {
                 var failed = snapshot with
                 {
-                    State = JobState.FailedToStart,
+                    State = snapshot.StartedAtUtc is null ? JobState.FailedToStart : JobState.HostCrashed,
                     FinishedAtUtc = DateTimeOffset.UtcNow,
-                    Error = new RemoteError(ErrorCode.Internal, $"TaskHost launch failed: {exception.Message}", false),
+                    Error = new RemoteError(ErrorCode.Internal, snapshot.StartedAtUtc is null
+                        ? $"TaskHost launch failed: {exception.Message}"
+                        : $"TaskHost crashed while the task was running: {exception.Message}", false),
                 };
                 await stateStore.SaveJobSnapshotAsync(failed, CancellationToken.None).ConfigureAwait(false);
             }
@@ -435,10 +446,10 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         }
     }
 
-    private void ScheduleRecoveredHost(TaskHostRegistrationInfo host)
+    private void ScheduleRecoveredHost(TaskHostRegistrationInfo host, ExecutionIdentity executionIdentity)
     {
         var completion = new TaskCompletionSource<TaskRuntimeStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var schedulerLifetime = scheduler.EnqueueAsync(ExecutionIdentity.CurrentUser, async token =>
+        var schedulerLifetime = scheduler.EnqueueAsync(executionIdentity, async token =>
         {
             try
             {
@@ -565,9 +576,9 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
         }
     }
 
-    private static bool IsTerminal(JobState state) => state is JobState.Exited or JobState.FailedToStart or JobState.Cancelled or JobState.InterruptedByReboot;
+    private static bool IsTerminal(JobState state) => state is JobState.Exited or JobState.FailedToStart or JobState.Cancelled or JobState.InterruptedByReboot or JobState.HostCrashed;
 
-    private static TaskRuntimeStatus ToRuntimeStatus(JobSnapshot snapshot) => new(snapshot, null, null, null, null, 0, 0, null);
+    private static TaskRuntimeStatus ToRuntimeStatus(JobSnapshot snapshot) => new(snapshot, null, null, null, null, 0, 0, null, snapshot.OutputTruncated);
 
     public async ValueTask DisposeAsync()
     {

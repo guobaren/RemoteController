@@ -1,4 +1,4 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
@@ -19,6 +19,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.Agent.Tests", "tests\Rc.Agent.Tests\Rc.Agent.Tests.csproj", "{D56B1E87-16D7-4C8A-AD51-29D9C7960E98}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.TaskHost.Tests", "tests\Rc.TaskHost.Tests\Rc.TaskHost.Tests.csproj", "{6D1C137C-0901-4399-991B-3AE2B8689C2A}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{17D07E46-48DA-49C9-BCF7-D03A1D98C0D2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rc.PrivilegedBroker.Tests", "tests\Rc.PrivilegedBroker.Tests\Rc.PrivilegedBroker.Tests.csproj", "{51B2F931-F6B7-46E6-A353-8B5FA31314F4}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -62,8 +66,15 @@ Global
 		{6D1C137C-0901-4399-991B-3AE2B8689C2A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{6D1C137C-0901-4399-991B-3AE2B8689C2A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{6D1C137C-0901-4399-991B-3AE2B8689C2A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{51B2F931-F6B7-46E6-A353-8B5FA31314F4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{51B2F931-F6B7-46E6-A353-8B5FA31314F4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{51B2F931-F6B7-46E6-A353-8B5FA31314F4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{51B2F931-F6B7-46E6-A353-8B5FA31314F4}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{51B2F931-F6B7-46E6-A353-8B5FA31314F4} = {17D07E46-48DA-49C9-BCF7-D03A1D98C0D2}
 	EndGlobalSection
 EndGlobal

@@ -214,6 +214,21 @@ public sealed class TaskHostRunnerTests
         Assert.True(elapsed < TimeSpan.FromSeconds(5), $"Force-kill fallback took too long: {elapsed}.");
     }
     [Fact]
+    public async Task OutputBeyondConfiguredLimitIsDrainedAndMarkedTruncated()
+    {
+        await using var fixture = new TaskHostFixture(maximumOutputBytes: 1024);
+        await using var runner = fixture.CreateRunner(ExecRequest.ForShell(
+            ShellKind.PowerShell,
+            "[Console]::Out.Write(('x' * 5000))"));
+
+        var status = await runner.RunAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(JobState.Exited, status.Job.State);
+        Assert.True(status.OutputTruncated);
+        Assert.Equal(1024, status.StdoutLength + status.StderrLength);
+        Assert.Equal(1024, (await fixture.SegmentsAsync("stdout")).Sum(segment => segment.Length));
+    }
+    [Fact]
     public async Task FailedStartProducesDurableFailureStatus()
     {
         await using var fixture = new TaskHostFixture();
@@ -231,11 +246,13 @@ public sealed class TaskHostRunnerTests
         private readonly string dataRoot = Path.Combine(Path.GetTempPath(), "rc-taskhost-tests", Guid.NewGuid().ToString("N"));
         private readonly string pipeName = "rc-taskhost-test-" + Guid.NewGuid().ToString("N");
         private readonly TimeSpan cancellationGracePeriod;
+        private readonly long maximumOutputBytes;
         private readonly string jobId = "job-" + Guid.NewGuid().ToString("N");
 
-        public TaskHostFixture(TimeSpan? cancellationGracePeriod = null)
+        public TaskHostFixture(TimeSpan? cancellationGracePeriod = null, long maximumOutputBytes = 200L * 1024 * 1024)
         {
             this.cancellationGracePeriod = cancellationGracePeriod ?? TimeSpan.FromSeconds(1);
+            this.maximumOutputBytes = maximumOutputBytes;
         }
 
         public TaskHostRunner CreateRunner(ExecRequest execution) => new(new TaskLaunchRequest(
@@ -244,7 +261,8 @@ public sealed class TaskHostRunnerTests
             ExecutionIdentity.CurrentUser,
             dataRoot,
             pipeName,
-            cancellationGracePeriod));
+            cancellationGracePeriod,
+            maximumOutputBytes: maximumOutputBytes));
 
         public Task<TaskControlResponse> SendAsync(TaskControlMessage message) =>
             TaskHostControlClient.SendAsync(pipeName, message, TimeSpan.FromSeconds(5));

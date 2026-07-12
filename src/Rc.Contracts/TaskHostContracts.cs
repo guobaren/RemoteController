@@ -21,7 +21,8 @@ public sealed class TaskLaunchRequest
         string dataRoot,
         string controlPipeName,
         TimeSpan cancellationGracePeriod,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null,
+        long maximumOutputBytes = 200L * 1024 * 1024)
     {
         if (string.IsNullOrWhiteSpace(jobId))
         {
@@ -44,12 +45,15 @@ public sealed class TaskLaunchRequest
             throw new ArgumentOutOfRangeException(nameof(cancellationGracePeriod));
         }
 
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumOutputBytes);
+
         JobId = jobId;
         Execution = execution;
         ExecutionIdentity = executionIdentity;
         DataRoot = dataRoot;
         ControlPipeName = controlPipeName;
         CancellationGracePeriod = cancellationGracePeriod;
+        MaximumOutputBytes = maximumOutputBytes;
         this.environment = environment is null
             ? null
             : new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(environment, StringComparer.Ordinal));
@@ -66,6 +70,8 @@ public sealed class TaskLaunchRequest
     public string ControlPipeName { get; }
 
     public TimeSpan CancellationGracePeriod { get; }
+
+    public long MaximumOutputBytes { get; }
 
     public IReadOnlyDictionary<string, string>? Environment => environment;
 }
@@ -137,7 +143,8 @@ public sealed record TaskRuntimeStatus(
     long? PeakWorkingSetBytes,
     long StdoutLength,
     long StderrLength,
-    DateTimeOffset? LastOutputAtUtc);
+    DateTimeOffset? LastOutputAtUtc,
+    bool OutputTruncated = false);
 
 public sealed record TaskControlResponse(
     TaskRuntimeStatus Status,

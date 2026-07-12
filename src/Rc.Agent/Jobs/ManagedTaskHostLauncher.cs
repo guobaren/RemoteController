@@ -14,23 +14,30 @@ public sealed class ManagedTaskHostHandle : IAsyncDisposable
 {
     private readonly IAsyncDisposable owner;
 
-    public ManagedTaskHostHandle(string controlPipeName, int? processId, Task<TaskRuntimeStatus> completion, IAsyncDisposable owner, bool survivesAgentShutdown)
+    public ManagedTaskHostHandle(string controlPipeName, int? processId, Task<TaskRuntimeStatus> completion, IAsyncDisposable owner, bool survivesAgentShutdown, TaskRuntimeStatus? initialStatus = null)
     {
         ControlPipeName = controlPipeName;
         ProcessId = processId;
         Completion = completion;
         this.owner = owner;
         SurvivesAgentShutdown = survivesAgentShutdown;
+        InitialStatus = initialStatus;
     }
 
     public string ControlPipeName { get; }
     public int? ProcessId { get; }
     public Task<TaskRuntimeStatus> Completion { get; }
     public bool SurvivesAgentShutdown { get; }
+    public TaskRuntimeStatus? InitialStatus { get; }
 
     public ValueTask DisposeAsync() => owner.DisposeAsync();
 }
 
+public sealed class UnavailableElevatedTaskHostLauncher : IManagedTaskHostLauncher
+{
+    public Task<ManagedTaskHostHandle> LaunchAsync(TaskLaunchRequest request, CancellationToken cancellationToken = default) =>
+        Task.FromException<ManagedTaskHostHandle>(new InvalidOperationException("The privileged broker is not configured or available."));
+}
 public sealed class InProcessTaskHostLauncher : IManagedTaskHostLauncher
 {
     public Task<ManagedTaskHostHandle> LaunchAsync(TaskLaunchRequest request, CancellationToken cancellationToken = default)

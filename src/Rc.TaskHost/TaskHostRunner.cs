@@ -13,6 +13,7 @@ public sealed class TaskHostRunner : IAsyncDisposable
     private readonly TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskHostSegmentWriter segmentWriter;
     private readonly SemaphoreSlim standardInputGate = new(1, 1);
+    private readonly bool allowElevatedExecution;
     private Process? process;
     private PseudoConsoleProcess? pseudoConsole;
     private JobState state = JobState.Queued;
@@ -23,14 +24,17 @@ public sealed class TaskHostRunner : IAsyncDisposable
     private RemoteError? error;
     private long stdoutLength;
     private long stderrLength;
+    private long reservedOutputBytes;
     private DateTimeOffset? lastOutputAtUtc;
     private bool cancellationRequested;
     private bool standardInputClosed;
+    private bool outputTruncated;
     private Task? runTask;
 
-    public TaskHostRunner(TaskLaunchRequest request)
+    public TaskHostRunner(TaskLaunchRequest request, bool allowElevatedExecution = false)
     {
         this.request = request ?? throw new ArgumentNullException(nameof(request));
+        this.allowElevatedExecution = allowElevatedExecution;
         segmentWriter = new TaskHostSegmentWriter(request.DataRoot);
     }
 
@@ -61,14 +65,15 @@ public sealed class TaskHostRunner : IAsyncDisposable
             }
 
             return new TaskRuntimeStatus(
-                new JobSnapshot(request.JobId, state, exitCode, createdAtUtc, startedAtUtc, finishedAtUtc, error),
+                new JobSnapshot(request.JobId, state, exitCode, createdAtUtc, startedAtUtc, finishedAtUtc, error, request.ExecutionIdentity, outputTruncated),
                 processId,
                 processorTime,
                 workingSetBytes,
                 peakWorkingSetBytes,
                 stdoutLength,
                 stderrLength,
-                lastOutputAtUtc);
+                lastOutputAtUtc,
+                outputTruncated);
         }
     }
 
@@ -91,23 +96,26 @@ public sealed class TaskHostRunner : IAsyncDisposable
         Process? runningProcess;
         lock (stateGate)
         {
-            if (state is JobState.Exited or JobState.FailedToStart or JobState.Cancelled)
+            if (IsTerminal(state))
             {
                 return;
             }
 
-            cancellationRequested = true;
             runningProcess = process;
         }
 
-        if (runningProcess is null)
+        if (runningProcess is null || runningProcess.HasExited)
         {
             return;
         }
-        if (runningProcess.HasExited)
+
+        lock (stateGate)
         {
-            MarkCancellationObserved(runningProcess);
-            return;
+            if (IsTerminal(state))
+            {
+                return;
+            }
+            cancellationRequested = true;
         }
 
         await TryWriteInterruptByteAsync(runningProcess, cancellationToken).ConfigureAwait(false);
@@ -159,9 +167,10 @@ public sealed class TaskHostRunner : IAsyncDisposable
 
     private async Task<TaskRuntimeStatus> RunCoreAsync(CancellationToken cancellationToken)
     {
-        if (request.ExecutionIdentity != ExecutionIdentity.CurrentUser)
+        if (request.ExecutionIdentity != ExecutionIdentity.CurrentUser &&
+            !(request.ExecutionIdentity == ExecutionIdentity.ElevatedBroker && allowElevatedExecution))
         {
-            SetFailedToStart(new RemoteError(ErrorCode.FailedPrecondition, "Only the current-user execution identity is supported by TaskHost.", false));
+            SetTerminalFailure(new RemoteError(ErrorCode.FailedPrecondition, "The requested execution identity is not authorized by this TaskHost.", false));
             started.TrySetResult();
             return GetStatus();
         }
@@ -229,7 +238,7 @@ public sealed class TaskHostRunner : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            SetFailedToStart(new RemoteError(ErrorCode.Internal, $"Failed to start task: {exception.Message}", false));
+            SetTerminalFailure(new RemoteError(ErrorCode.Internal, $"Task execution failed: {exception.Message}", false));
             started.TrySetResult();
         }
 
@@ -320,13 +329,26 @@ public sealed class TaskHostRunner : IAsyncDisposable
                 return;
             }
 
-            var data = buffer.AsSpan(0, read).ToArray();
+            int captured;
             long offset;
             lock (stateGate)
             {
+                var remaining = Math.Max(0, request.MaximumOutputBytes - reservedOutputBytes);
+                captured = checked((int)Math.Min(read, remaining));
+                reservedOutputBytes += captured;
+                if (captured < read)
+                {
+                    outputTruncated = true;
+                }
                 offset = stream == JobOutputKind.Stdout ? stdoutLength : stderrLength;
             }
 
+            if (captured == 0)
+            {
+                continue;
+            }
+
+            var data = buffer.AsSpan(0, captured).ToArray();
             await segmentWriter.WriteAsync(request.JobId, stream, offset, data, cancellationToken).ConfigureAwait(false);
 
             lock (stateGate)
@@ -356,7 +378,7 @@ public sealed class TaskHostRunner : IAsyncDisposable
                     PipeDirection.InOut,
                     1,
                     PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
                 var message = await TaskHostPipeProtocol.ReadAsync<TaskControlMessage>(server, cancellationToken).ConfigureAwait(false);
                 var response = await HandleControlMessageSafelyAsync(message).ConfigureAwait(false);
@@ -532,12 +554,14 @@ public sealed class TaskHostRunner : IAsyncDisposable
         }
     }
 
-    private void SetFailedToStart(RemoteError failure)
+    private static bool IsTerminal(JobState value) => value is JobState.Exited or JobState.FailedToStart or JobState.Cancelled or JobState.InterruptedByReboot or JobState.HostCrashed;
+
+    private void SetTerminalFailure(RemoteError failure)
     {
         lock (stateGate)
         {
             error = failure;
-            state = JobState.FailedToStart;
+            state = startedAtUtc is null ? JobState.FailedToStart : JobState.HostCrashed;
             finishedAtUtc = DateTimeOffset.UtcNow;
         }
     }
@@ -649,7 +673,7 @@ public static class TaskHostControlClient
     {
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeout);
-        await using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        await using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await client.ConnectAsync(timeoutSource.Token).ConfigureAwait(false);
         await TaskHostPipeProtocol.WriteAsync(client, message, timeoutSource.Token).ConfigureAwait(false);
         return await TaskHostPipeProtocol.ReadAsync<TaskControlResponse>(client, timeoutSource.Token).ConfigureAwait(false);

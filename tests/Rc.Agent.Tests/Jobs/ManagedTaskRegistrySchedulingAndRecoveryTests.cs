@@ -101,7 +101,7 @@ public sealed class ManagedTaskRegistrySchedulingAndRecoveryTests
         var terminal = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(15));
 
         Assert.True(terminal.Completed);
-        Assert.Equal(JobState.FailedToStart, terminal.Status.Job.State);
+        Assert.Equal(JobState.HostCrashed, terminal.Status.Job.State);
         Assert.Equal(ErrorCode.Internal, terminal.Status.Job.Error?.Code);
         Assert.Empty(await store.ListTaskHostRegistrationsAsync());
     }

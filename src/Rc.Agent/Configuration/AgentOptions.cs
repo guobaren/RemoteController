@@ -12,7 +12,12 @@ public sealed record AgentOptions
 
     public int ElevatedTaskLimit { get; init; } = checked((int)ReadLong("RC_ELEVATED_TASK_LIMIT", 2));
 
+    public string BrokerPipeName { get; init; } = Environment.GetEnvironmentVariable("RC_BROKER_PIPE_NAME") ?? "rc-privileged-broker";
+
+    public string? BrokerSecretPath { get; init; } = Environment.GetEnvironmentVariable("RC_BROKER_SECRET_PATH");
+
     public long LogQuotaBytes { get; init; } = ReadLong("RC_LOG_QUOTA_BYTES", 200L * 1024 * 1024);
+    public long TaskOutputLimitBytes { get; init; } = ReadLong("RC_TASK_OUTPUT_LIMIT_BYTES", 200L * 1024 * 1024);
 
     public long AuditQuotaBytes { get; init; } = ReadLong("RC_AUDIT_QUOTA_BYTES", 16L * 1024 * 1024);
 

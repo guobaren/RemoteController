@@ -9,6 +9,7 @@ using System.Text.Json;
 using Rc.Agent.Jobs;
 using Rc.Agent.Files;
 using Rc.Agent.Configuration;
+using Rc.Agent.Elevation;
 using Rc.Agent.Persistence;
 using Rc.Agent.Security;
 using Rc.Contracts;
@@ -55,7 +56,15 @@ public sealed class TlsControlListener : IAsyncDisposable
         this.stateStore = stateStore;
         this.pairingCoordinator = pairingCoordinator;
         this.options = options ?? new AgentOptions();
-        taskRegistry = new ManagedTaskRegistry(stateStore, this.options.NormalTaskLimit, new ExternalTaskHostLauncher(), this.options.CancellationGrace);
+        var brokerSecretPath = this.options.BrokerSecretPath ?? Path.Combine(stateStore.DataRoot, "broker-auth.key");
+        taskRegistry = new ManagedTaskRegistry(
+            stateStore,
+            this.options.NormalTaskLimit,
+            new ExternalTaskHostLauncher(),
+            this.options.CancellationGrace,
+            this.options.ElevatedTaskLimit,
+            new PrivilegedBrokerTaskHostLauncher(this.options.BrokerPipeName, brokerSecretPath),
+            this.options.TaskOutputLimitBytes);
         fileService = new FileTransferService(stateStore, this.options);
         listener = new TcpListener(IPAddress.Any, port);
     }
@@ -461,12 +470,6 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        if (request.Execution.ExecutionIdentity != ExecutionIdentity.CurrentUser)
-        {
-            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, "Only current-user execution is supported by exec_once.");
-            return;
-        }
-
         if (!await VerifyPairedControllerRequestAsync(
                 session,
                 request.ControllerId,
@@ -486,28 +489,19 @@ public sealed class TlsControlListener : IAsyncDisposable
 
         try
         {
-            var jobId = "exec-" + Guid.NewGuid().ToString("N");
-            var launch = new TaskLaunchRequest(
-                jobId,
-                request.Execution,
-                ExecutionIdentity.CurrentUser,
-                stateStore.DataRoot,
-                "rc-exec-" + Guid.NewGuid().ToString("N"),
-                TimeSpan.FromSeconds(5));
-            await using var runner = new TaskHostRunner(launch);
-            var status = await runner.RunAsync(cancellationToken);
-            await stateStore.SaveJobSnapshotAsync(status.Job, cancellationToken);
-            await stateStore.RegisterTaskHostOutputSegmentsAsync(jobId, cancellationToken);
-
+            var started = await taskRegistry.StartAsync(request.Execution, cancellationToken).ConfigureAwait(false);
+            var waited = await taskRegistry.WaitAsync(started.Job.JobId, timeout: null, cancellationToken).ConfigureAwait(false);
+            var status = waited.Status;
+            var jobId = status.Job.JobId;
             var standardOutput = await ReadOutputAsync(jobId, JobOutputKind.Stdout, cancellationToken);
             var standardError = await ReadOutputAsync(jobId, JobOutputKind.Stderr, cancellationToken);
-            await AuditAsync("job.exec_once", request.ControllerId, jobId, true, null, null, cancellationToken).ConfigureAwait(false);
+            await AuditAsync("job.exec_once", request.ControllerId, jobId, true, null, new Dictionary<string, string> { ["executionIdentity"] = status.Job.ExecutionIdentity.ToString() }, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlExecuteOnceResponse(
                 status.Job,
                 standardOutput,
-                status.StdoutLength > standardOutput.Length,
+                status.OutputTruncated || status.StdoutLength > standardOutput.Length,
                 standardError,
-                status.StderrLength > standardError.Length));
+                status.OutputTruncated || status.StderrLength > standardError.Length));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -532,12 +526,6 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        if (request.Execution.ExecutionIdentity != ExecutionIdentity.CurrentUser)
-        {
-            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, "Only current-user execution is supported by job_start.");
-            return;
-        }
-
         if (!await VerifyPairedControllerRequestAsync(session,
                 request.ControllerId,
                 request.Signature,
@@ -551,7 +539,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         try
         {
             var status = await taskRegistry.StartAsync(request.Execution, cancellationToken).ConfigureAwait(false);
-            await AuditAsync("job.started", request.ControllerId, status.Job.JobId, true, null, null, cancellationToken).ConfigureAwait(false);
+            await AuditAsync("job.started", request.ControllerId, status.Job.JobId, true, null, new Dictionary<string, string> { ["executionIdentity"] = status.Job.ExecutionIdentity.ToString() }, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlJobStartResponse(status));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -882,7 +870,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
     }
 
-    private static bool IsTerminal(JobState state) => state is JobState.Exited or JobState.FailedToStart or JobState.Cancelled or JobState.InterruptedByReboot;
+    private static bool IsTerminal(JobState state) => state is JobState.Exited or JobState.FailedToStart or JobState.Cancelled or JobState.InterruptedByReboot or JobState.HostCrashed;
     private async Task<bool> VerifyPairedControllerRequestAsync(
         AuthenticatedControlSession? session,
         string controllerId,

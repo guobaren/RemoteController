@@ -98,4 +98,5 @@ public enum JobState
     FailedToStart,
     Cancelled,
     InterruptedByReboot,
+    HostCrashed,
 }

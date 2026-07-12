@@ -7,7 +7,9 @@ public sealed record JobSnapshot(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset? StartedAtUtc,
     DateTimeOffset? FinishedAtUtc,
-    RemoteError? Error);
+    RemoteError? Error,
+    ExecutionIdentity ExecutionIdentity = ExecutionIdentity.CurrentUser,
+    bool OutputTruncated = false);
 
 public sealed record JobRequest(string JobId);
 

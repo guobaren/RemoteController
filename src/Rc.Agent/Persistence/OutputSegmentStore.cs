@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 using Rc.Contracts;
 
 namespace Rc.Agent.Persistence;
@@ -410,7 +410,7 @@ public sealed partial class AgentStateStore
             SELECT j.job_id
             FROM job_snapshots AS j
             INNER JOIN output_segments AS s ON s.job_id = j.job_id
-            WHERE j.state IN ('Exited', 'FailedToStart', 'Cancelled', 'InterruptedByReboot')
+            WHERE j.state IN ('Exited', 'FailedToStart', 'Cancelled', 'InterruptedByReboot', 'HostCrashed')
             GROUP BY j.job_id
             ORDER BY COALESCE(j.finished_at_utc, j.created_at_utc), j.job_id;
             """;

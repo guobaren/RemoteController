@@ -44,6 +44,34 @@ public sealed class SchemaMigrationTests
     }
 
     [Fact]
+    public async Task InitializeAsyncAddsExecutionIdentityToExistingJobSnapshotSchema()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+
+        await using var connection = new SqliteConnection("Data Source=" + store.DatabasePath);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('job_snapshots') WHERE name = 'execution_identity';";
+
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+    }
+    [Fact]
+    public async Task InitializeAsyncAddsOutputTruncatedToExistingJobSnapshotSchema()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+
+        await using var connection = new SqliteConnection("Data Source=" + store.DatabasePath);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('job_snapshots') WHERE name = 'output_truncated';";
+
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+    }
+    [Fact]
     public async Task InitializeAsyncCreatesTheUniqueOutputSegmentPathIndex()
     {
         using var directory = new TemporaryDirectory();

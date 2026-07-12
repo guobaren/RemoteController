@@ -145,6 +145,7 @@ public static class JobCommand
         string? command = null;
         string? workingDirectory = null;
         var usePseudoConsole = false;
+        var elevated = false;
         var columns = 120;
         var rows = 30;
         for (var index = 1; index < args.Length; index++)
@@ -186,6 +187,9 @@ public static class JobCommand
                     }
                     usePseudoConsole = true;
                     break;
+                case "--elevated":
+                    elevated = true;
+                    break;
                 case "--text":
                     text = true;
                     break;
@@ -203,7 +207,13 @@ public static class JobCommand
 
         try
         {
-            execution = ExecRequest.ForShell(shell, command, workingDirectory, terminal: usePseudoConsole ? new TerminalOptions(columns, rows) : null);
+            execution = new ExecRequest(
+                directArgv: null,
+                shell: new ShellLaunch(shell, command),
+                workingDirectory,
+                environment: null,
+                elevated ? ExecutionIdentity.ElevatedBroker : ExecutionIdentity.CurrentUser,
+                usePseudoConsole ? new TerminalOptions(columns, rows) : null);
             return true;
         }
         catch (ArgumentException exception)
@@ -277,7 +287,7 @@ public static class JobCommand
                 case "--state" when index + 1 < args.Length:
                     if (!Enum.TryParse<JobState>(args[++index], true, out var parsedState))
                     {
-                        error = "--state must be Queued, Running, Exited, FailedToStart, Cancelled, or InterruptedByReboot.";
+                        error = "--state must be Queued, Running, Exited, FailedToStart, Cancelled, InterruptedByReboot, or HostCrashed.";
                         return false;
                     }
                     state = parsedState;
@@ -324,7 +334,7 @@ public static class JobCommand
     }
 
     private static string Usage() =>
-        "Usage: rcctl job start <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--pty] [--cols <1-1000>] [--rows <1-1000>] [--text] | rcctl job status <IP:port> --fingerprint <SHA256> --job <jobId> [--text] | rcctl job list <IP:port> --fingerprint <SHA256> [--state <JobState>] [--text]";
+        "Usage: rcctl job start <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--elevated] [--pty] [--cols <1-1000>] [--rows <1-1000>] [--text] | rcctl job status <IP:port> --fingerprint <SHA256> --job <jobId> [--text] | rcctl job list <IP:port> --fingerprint <SHA256> [--state <JobState>] [--text]";
 
     private static string? NormalizeFingerprint(string value)
     {

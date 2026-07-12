@@ -86,6 +86,7 @@ public static class ExecCommand
         var shell = ShellKind.PowerShell;
         string? command = null;
         string? workingDirectory = null;
+        var elevated = false;
         for (var index = 1; index < args.Length; index++)
         {
             switch (args[index])
@@ -105,6 +106,9 @@ public static class ExecCommand
                     break;
                 case "--workdir" when index + 1 < args.Length:
                     workingDirectory = args[++index];
+                    break;
+                case "--elevated":
+                    elevated = true;
                     break;
                 case "--text":
                     text = true;
@@ -129,7 +133,9 @@ public static class ExecCommand
 
         try
         {
-            execution = ExecRequest.ForShell(shell, command, workingDirectory);
+            execution = elevated
+                ? ExecRequest.ForShellWithIdentity(shell, command, ExecutionIdentity.ElevatedBroker, workingDirectory)
+                : ExecRequest.ForShell(shell, command, workingDirectory);
             return true;
         }
         catch (ArgumentException exception)
@@ -140,7 +146,7 @@ public static class ExecCommand
     }
 
     private static string Usage() =>
-        "Usage: rcctl exec <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--text]";
+        "Usage: rcctl exec <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--elevated] [--text]";
 
     private static string? NormalizeFingerprint(string value)
     {

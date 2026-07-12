@@ -13,6 +13,7 @@ public sealed class JobStateSerializationTests
     [InlineData("FailedToStart", "failed_to_start")]
     [InlineData("Cancelled", "cancelled")]
     [InlineData("InterruptedByReboot", "interrupted_by_reboot")]
+    [InlineData("HostCrashed", "host_crashed")]
     public void JobStateSerializesToItsStableWireName(string memberName, string wireName)
     {
         var jobStateType = Assembly.Load("Rc.Contracts").GetType("Rc.Contracts.JobState");

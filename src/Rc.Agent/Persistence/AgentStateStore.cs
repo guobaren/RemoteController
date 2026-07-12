@@ -184,6 +184,35 @@ public sealed partial class AgentStateStore : IAsyncDisposable
         recordFifthVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
         await recordFifthVersion.ExecuteNonQueryAsync(cancellationToken);
         fifthTransaction.Commit();
+
+        using var sixthTransaction = connection.BeginTransaction();
+        var identityColumnCheck = connection.CreateCommand();
+        identityColumnCheck.Transaction = sixthTransaction;
+        identityColumnCheck.CommandText = "SELECT COUNT(*) FROM pragma_table_info('job_snapshots') WHERE name = 'execution_identity';";
+        if (Convert.ToInt64(await identityColumnCheck.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == 0)
+        {
+            var addIdentityColumn = connection.CreateCommand();
+            addIdentityColumn.Transaction = sixthTransaction;
+            addIdentityColumn.CommandText = "ALTER TABLE job_snapshots ADD COLUMN execution_identity TEXT NOT NULL DEFAULT 'CurrentUser';";
+            await addIdentityColumn.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var truncatedColumnCheck = connection.CreateCommand();
+        truncatedColumnCheck.Transaction = sixthTransaction;
+        truncatedColumnCheck.CommandText = "SELECT COUNT(*) FROM pragma_table_info('job_snapshots') WHERE name = 'output_truncated';";
+        if (Convert.ToInt64(await truncatedColumnCheck.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == 0)
+        {
+            var addTruncatedColumn = connection.CreateCommand();
+            addTruncatedColumn.Transaction = sixthTransaction;
+            addTruncatedColumn.CommandText = "ALTER TABLE job_snapshots ADD COLUMN output_truncated INTEGER NOT NULL DEFAULT 0;";
+            await addTruncatedColumn.ExecuteNonQueryAsync(cancellationToken);
+        }
+        var recordSixthVersion = connection.CreateCommand();
+        recordSixthVersion.Transaction = sixthTransaction;
+        recordSixthVersion.CommandText = "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc) VALUES (6, $appliedAtUtc);";
+        recordSixthVersion.Parameters.AddWithValue("$appliedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+        await recordSixthVersion.ExecuteNonQueryAsync(cancellationToken);
+        sixthTransaction.Commit();
     }
 
     public async Task SaveJobSnapshotAsync(JobSnapshot snapshot, CancellationToken cancellationToken = default)
@@ -194,10 +223,10 @@ public sealed partial class AgentStateStore : IAsyncDisposable
         command.CommandText = """
             INSERT INTO job_snapshots (
                 job_id, state, exit_code, created_at_utc, started_at_utc, finished_at_utc,
-                error_code, error_message, error_retryable)
+                error_code, error_message, error_retryable, execution_identity, output_truncated)
             VALUES (
                 $jobId, $state, $exitCode, $createdAtUtc, $startedAtUtc, $finishedAtUtc,
-                $errorCode, $errorMessage, $errorRetryable)
+                $errorCode, $errorMessage, $errorRetryable, $executionIdentity, $outputTruncated)
             ON CONFLICT(job_id) DO UPDATE SET
                 state = excluded.state,
                 exit_code = excluded.exit_code,
@@ -206,7 +235,11 @@ public sealed partial class AgentStateStore : IAsyncDisposable
                 finished_at_utc = excluded.finished_at_utc,
                 error_code = excluded.error_code,
                 error_message = excluded.error_message,
-                error_retryable = excluded.error_retryable;
+                error_retryable = excluded.error_retryable,
+                execution_identity = excluded.execution_identity,
+                output_truncated = excluded.output_truncated
+            WHERE job_snapshots.state NOT IN ('Exited', 'FailedToStart', 'Cancelled', 'InterruptedByReboot', 'HostCrashed')
+               OR job_snapshots.state = excluded.state;
             """;
         command.Parameters.AddWithValue("$jobId", snapshot.JobId);
         command.Parameters.AddWithValue("$state", snapshot.State.ToString());
@@ -217,6 +250,8 @@ public sealed partial class AgentStateStore : IAsyncDisposable
         command.Parameters.AddWithValue("$errorCode", snapshot.Error?.Code.ToString() ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$errorMessage", snapshot.Error?.Message ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$errorRetryable", snapshot.Error is null ? DBNull.Value : snapshot.Error.Retryable ? 1 : 0);
+        command.Parameters.AddWithValue("$executionIdentity", snapshot.ExecutionIdentity.ToString());
+        command.Parameters.AddWithValue("$outputTruncated", snapshot.OutputTruncated ? 1 : 0);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -227,7 +262,7 @@ public sealed partial class AgentStateStore : IAsyncDisposable
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT state, exit_code, created_at_utc, started_at_utc, finished_at_utc,
-                   error_code, error_message, error_retryable
+                   error_code, error_message, error_retryable, execution_identity, output_truncated
             FROM job_snapshots
             WHERE job_id = $jobId;
             """;
@@ -251,21 +286,23 @@ public sealed partial class AgentStateStore : IAsyncDisposable
             DateTimeOffset.Parse(reader.GetString(2), System.Globalization.CultureInfo.InvariantCulture),
             reader.IsDBNull(3) ? null : DateTimeOffset.Parse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture),
             reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4), System.Globalization.CultureInfo.InvariantCulture),
-            error);
+            error,
+            Enum.Parse<ExecutionIdentity>(reader.GetString(8), ignoreCase: false),
+            reader.GetInt64(9) != 0);
     }
 
     public async Task<IReadOnlyList<JobSnapshot>> ListJobSnapshotsAsync(JobState? state = null, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT job_id, state, exit_code, created_at_utc, started_at_utc, finished_at_utc, error_code, error_message, error_retryable FROM job_snapshots WHERE ($state IS NULL OR state = $state) ORDER BY created_at_utc, job_id;";
+        command.CommandText = "SELECT job_id, state, exit_code, created_at_utc, started_at_utc, finished_at_utc, error_code, error_message, error_retryable, execution_identity, output_truncated FROM job_snapshots WHERE ($state IS NULL OR state = $state) ORDER BY created_at_utc, job_id;";
         command.Parameters.AddWithValue("$state", state?.ToString() ?? (object)DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var snapshots = new List<JobSnapshot>();
         while (await reader.ReadAsync(cancellationToken))
         {
             var error = reader.IsDBNull(6) ? null : new RemoteError(Enum.Parse<ErrorCode>(reader.GetString(6), false), reader.GetString(7), reader.GetInt64(8) != 0);
-            snapshots.Add(new JobSnapshot(reader.GetString(0), Enum.Parse<JobState>(reader.GetString(1), false), reader.IsDBNull(2) ? null : reader.GetInt32(2), DateTimeOffset.Parse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture), error));
+            snapshots.Add(new JobSnapshot(reader.GetString(0), Enum.Parse<JobState>(reader.GetString(1), false), reader.IsDBNull(2) ? null : reader.GetInt32(2), DateTimeOffset.Parse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture), error, Enum.Parse<ExecutionIdentity>(reader.GetString(9), false), reader.GetInt64(10) != 0));
         }
 
         return snapshots;

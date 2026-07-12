@@ -24,7 +24,7 @@ public sealed class TaskLaunchRequestTests
 
         var json = JsonSerializer.Serialize(request, ContractJson.Options);
 
-        Assert.Equal("{\"jobId\":\"job-1\",\"execution\":{\"directArgv\":[\"cmd.exe\",\"/c\",\"echo hello\"],\"workingDirectory\":null,\"environment\":null},\"executionIdentity\":\"current_user\",\"dataRoot\":\"C:\\\\agent-data\",\"controlPipeName\":\"rc-job-1\",\"cancellationGracePeriod\":\"00:00:10\",\"environment\":{\"RC_MODE\":\"safe\"}}", json);
+        Assert.Equal("{\"jobId\":\"job-1\",\"execution\":{\"directArgv\":[\"cmd.exe\",\"/c\",\"echo hello\"],\"workingDirectory\":null,\"environment\":null},\"executionIdentity\":\"current_user\",\"dataRoot\":\"C:\\\\agent-data\",\"controlPipeName\":\"rc-job-1\",\"cancellationGracePeriod\":\"00:00:10\",\"maximumOutputBytes\":209715200,\"environment\":{\"RC_MODE\":\"safe\"}}", json);
         var mutable = Assert.IsAssignableFrom<IDictionary<string, string>>(request.Environment!);
         Assert.Throws<NotSupportedException>(() => mutable["RC_MODE"] = "unsafe");
     }

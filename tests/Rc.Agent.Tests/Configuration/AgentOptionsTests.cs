@@ -18,6 +18,8 @@ public sealed class AgentOptionsTests
         Assert.Equal(8, options.NormalTaskLimit);
         Assert.Equal(2, options.ElevatedTaskLimit);
         Assert.Equal(200L * 1024 * 1024, options.LogQuotaBytes);
+        Assert.Equal(200L * 1024 * 1024, options.TaskOutputLimitBytes);
+        Assert.Equal("rc-privileged-broker", options.BrokerPipeName);
         Assert.Equal(TimeSpan.FromSeconds(10), options.CancellationGrace);
     }
     [Fact]

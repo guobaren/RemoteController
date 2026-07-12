@@ -59,7 +59,7 @@ public sealed partial class AgentStateStore
     public async Task MarkJobInterruptedByRebootAsync(string jobId, CancellationToken cancellationToken = default)
     {
         var snapshot = await GetJobSnapshotAsync(jobId, cancellationToken).ConfigureAwait(false);
-        if (snapshot is null || snapshot.State is JobState.Exited or JobState.FailedToStart or JobState.Cancelled or JobState.InterruptedByReboot)
+        if (snapshot is null || snapshot.State is JobState.Exited or JobState.FailedToStart or JobState.Cancelled or JobState.InterruptedByReboot or JobState.HostCrashed)
         {
             return;
         }

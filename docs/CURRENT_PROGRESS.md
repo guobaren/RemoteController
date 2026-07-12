@@ -4,7 +4,7 @@
 
 ## 目标
 
-面向 Windows 10/11 局域网的单控制端远程控制工具。控制端最终将能让 AI agent 在另一台 Windows 电脑上执行命令、管理并发且可交互的长任务、读取日志、写入标准输入，并传输文件；GUI 自动化、提权 Broker 与服务化将在后续接入。
+面向 Windows 10/11 局域网的单控制端远程控制工具。控制端最终将能让 AI agent 在另一台 Windows 电脑上执行命令、管理并发且可交互的长任务、读取日志、写入标准输入，并传输文件；提权 Broker 已完成首版安全本地执行闭环；服务化与 GUI 自动化将在后续接入。
 
 ## 已提交能力
 
@@ -26,7 +26,7 @@
 - Agent 在 TCP 上提供 TLS 单请求 JSON 控制端点：`hello`、`pair_start`、`pair_round1`、`pair_round2`、`pair_complete`。
 - `rcctl probe <IP:port> --fingerprint <SHA256>` 可读取公开设备 ID、TLS 指纹和“是否已配对”状态。
 - `rcctl pair <IP:port> --fingerprint <SHA256>` 会在 Agent 本机控制台显示一次性配对码；控制端输入该码后，使用三轮 J-PAKE 和控制端 ECDSA 证书确认完成配对。
-- `rcctl exec <IP:port> --fingerprint <SHA256> --command <命令> [--shell powershell|cmd] [--workdir <路径>] [--text]` 已可执行一条当前用户命令；控制端签名绑定 Agent 设备 ID、控制端 ID 与完整执行请求，Agent 验签后串行执行并返回退出码、stdout 与 stderr。
+- `rcctl exec <IP:port> --fingerprint <SHA256> --command <命令> [--shell powershell|cmd] [--workdir <路径>] [--elevated] [--text]` 已可执行一条当前用户或显式 Broker 提权命令；控制端签名绑定 Agent 设备 ID、控制端 ID 与完整执行请求，Agent 验签后串行执行并返回退出码、stdout 与 stderr。
 - 控制端身份保存为 P-256 ECDSA 证书；PFX 用当前用户 DPAPI 加密后写入 `%LOCALAPPDATA%\RemoteController\controller-identity.dpapi`。可用 `RC_CONTROLLER_DATA_ROOT` 替换目录，用于隔离测试。
 - TLS 采用 Agent 公布的 SHA-256 DER 证书指纹固定信任，不接受系统信任链或名称匹配替代。
 - Agent 只允许一个已配对控制端。完成配对后，新的 `pair_start` 将被拒绝，直到未来增加显式取消配对命令。
@@ -84,8 +84,10 @@
 - `.\.dotnet\dotnet.exe build .\Rc.RemoteController.sln -p:NuGetAudit=false --no-restore -v minimal`：通过，0 warnings / 0 errors。
 - `dotnet test .\tests\Rc.Agent.Tests\Rc.Agent.Tests.csproj -p:NuGetAudit=false --filter "FullyQualifiedName~AgentCertificateManagerTests|FullyQualifiedName~PairingCoordinatorTests|FullyQualifiedName~JpakePairingSessionTests" -v minimal`：8 通过。
 - `git diff --check`：通过（仅有 Git 的既有 LF/CRLF 提示）。
-- `.\.dotnet\dotnet.exe test .\Rc.RemoteController.sln -p:NuGetAudit=false --no-restore -v minimal`：192 项测试全部通过（Contracts 108、TaskHost 11、Agent 73）。
-- 完成上述构建和测试后，已停止 9 个仅由项目内 SDK 启动的 Roslyn/MSBuild 残留进程，并删除临时 SDK 目录 `E:\RemoteController\.dotnet`；系统当前只有 .NET Runtime、没有可用 SDK，因此后续构建需安装正式 SDK 或重新准备隔离工具链。
+- `.\.dotnet\dotnet.exe test .\Rc.RemoteController.sln -p:NuGetAudit=false --no-restore -v minimal`：201 项测试全部通过（Contracts 110、TaskHost 12、Agent 77、PrivilegedBroker 2）。
+- 新增 P0 验收：`FailedToStart`/`HostCrashed` 语义拆分、首个终态原子胜出、退出/取消竞争、运行时 stdout+stderr 合并输出上限与持久化 `OutputTruncated` 标记；`RC_TASK_OUTPUT_LIMIT_BYTES` 默认 200 MiB。
+- 新增 P1 验收：Broker HMAC 请求完整性与时效验证、独立 elevated 队列、显式 `exec/job start --elevated` 路由、执行身份持久化，以及 `ManagedTaskRegistry → PrivilegedBroker → TaskHost → SQLite/日志读取` 端到端测试。
+- 已停止仅由项目临时 SDK 启动的残留进程，并删除 `E:\RemoteController\.dotnet`；后续构建需使用正式安装的 .NET SDK 或重新准备隔离工具链。
 - 新增 job 控制回归覆盖：签名字段防篡改、stdin/close-input、按偏移日志读取、等待超时与取消终态。
 - 新增调度/恢复回归覆盖：单并发排队、Queued 不重放、缺失 TaskHost 中断标记，以及真实独立 TaskHost 跨注册表重启后重连并完成。
 - 新增真实 TLS 会话回归：挑战签名绑定 session/challenge/expiry，同一 TLS 连接认证一次后连续执行两次无签名 job 请求。
@@ -104,21 +106,16 @@
 
 P0 当前状态：核心产品功能已补齐并通过单机自动化；剩余项以异常分支穷举审阅和磁盘不足故障注入为主。真实双机/双 VM 验收仍按后续环境测试处理。
 
-### P1：真正的交互终端和任务语义
+### P1：交互终端、可靠任务语义与显式提权（已完成首版功能闭环）
 
-1. **真正的 ConPTY/HPCON 任务启动（已实现并通过 Windows 测试）**：TaskHost 使用 `CreatePseudoConsole`、`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 和 `CreateProcessW` 启动真实伪终端；PTY 输出合并为 stdout，支持交互输入。
-2. **正确的 Ctrl+C 与终止升级（已实现并测试）**：取消先向 ConPTY 写入 Ctrl+C；进程在可配置宽限期内未退出时终止完整进程树。自动化同时覆盖 Ctrl+C 正常退出和忽略中断后的强杀回退。
-3. **终端尺寸与 resize（已实现并测试）**：执行契约支持初始列/行，控制协议和 CLI 支持 `job resize`，resize 签名绑定 job/列/行；测试覆盖 resize 后输出保留和非 PTY 任务稳定拒绝。
-4. **任务调度配置化和边界行为（核心边界已补齐）**：`RC_NORMAL_TASK_LIMIT`、`RC_ELEVATED_TASK_LIMIT` 和 `RC_CANCELLATION_GRACE_MS` 已接入；调度器会把取消令牌传递给已开始的工作。自动化已覆盖单并发严格 FIFO、普通/提权队列隔离、Queued 重复取消且不启动 TaskHost、自然退出后的取消幂等、无控制端读取时的大输出排空、TaskHost 突然退出后的持久化终态，以及重启恢复。仍需继续做高次数退出/取消竞争压力测试和更多 TaskHost 崩溃时点矩阵。
+1. **ConPTY/Ctrl+C/resize（已实现并测试）**：TaskHost 使用真实 HPCON 伪终端，支持交互输入、Ctrl+C 后宽限期强杀、初始终端尺寸和运行时 resize。
+2. **任务终态与取消竞态（已实现并测试）**：`FailedToStart` 仅表示运行前失败；TaskHost 在进入 Running 后异常退出记为 `HostCrashed`。SQLite 使用条件 upsert 保证首个终态胜出，同状态补充更新仍允许；自然退出后的迟到取消不能覆盖真实退出结果。
+3. **运行时输出限额（已实现并测试）**：`RC_TASK_OUTPUT_LIMIT_BYTES` 限制 stdout/stderr 合并持久化字节数；达到上限后继续排空子进程管道但停止保存，并在运行状态及 SQLite 快照持久化 `OutputTruncated=true`。
+4. **Privileged Broker 本地 IPC（已实现并测试）**：Broker 仅监听 `PipeOptions.CurrentUserOnly` named pipe，不开放 TCP；请求使用至少 32 字节共享密钥进行 HMAC-SHA256 验证，签名绑定 request ID、时间、nonce 与完整启动请求，并具有时钟偏差和 nonce 重放防护。
+5. **显式提权路由与独立队列（已实现并测试）**：`rcctl exec ... --elevated` 与 `rcctl job start ... --elevated` 明确选择 `ElevatedBroker`；普通任务不进入 Broker，提权任务使用 `RC_ELEVATED_TASK_LIMIT` 独立队列，执行身份和输出截断状态持久化到任务快照与审计详情。
+6. **Broker 启动边界**：Broker 当前作为单独的管理员进程启动，Agent 不隐式拉起或自提权；生产服务账户部署时，共享密钥和 pipe ACL 需由后续服务安装功能配置。当前 `CurrentUserOnly` 模型要求 Agent 与 Broker 运行在同一 Windows 账户下。
 
-P1 当前状态：ConPTY、Ctrl+C/强杀、resize 和主要调度边界已完成；剩余工作集中在高次数退出/取消竞争压力测试与更细的 TaskHost 崩溃时点矩阵。
-
-### P2：显式提权执行 Broker
-
-1. **Privileged Broker 本地 IPC**：实现受 ACL 和消息认证保护的 named pipe；Broker 不开放 TCP，非 Agent 本地进程不能伪造请求。
-2. **`exec --elevated` 和提权任务路由**：只有显式提权请求进入 Broker，普通任务始终使用普通调度器；任务元数据和审计记录实际执行身份。
-3. **独立 elevated 队列与并发限额**：与普通任务队列隔离，支持独立配置、排队、取消和恢复语义。
-
+P0–P1 当前状态：产品功能实现已完成，并通过 201 项单机自动化测试。真实双机/双 VM 网络验收，以及不同 Windows 服务账户下的显式 SID ACL 验收，标记为环境具备后补齐，不作为当前功能实现阻塞项。
 ### P3：服务化、安装、升级和卸载
 
 1. 安装 Agent 与 Privileged Broker Windows Service，配置服务账户、ACL、开机启动和故障恢复策略。
@@ -141,7 +138,7 @@ P1 当前状态：ConPTY、Ctrl+C/强杀、resize 和主要调度边界已完成
 4. 建立 Windows CI，执行 restore、build、单元测试、契约测试和可条件启用的 Windows 集成测试。
 5. 生成 self-contained Windows x64 产物，校验 Agent、CLI、TaskHost、Broker 和 UiAgent 发布文件完整后再创建版本。
 
-推荐功能实现顺序：`unpair`/会话失效 → 完整审计 → 配对滥用防护与限额错误语义 → ConPTY/Ctrl+C/resize → Broker/elevated 队列 → 服务安装 → GUI → CLI 契约收口 → 文档、CI 和发布。
+后续功能实现顺序：服务安装与服务账户 ACL → GUI 会话自动化 → CLI 契约收口 → Windows CI、自包含发布与升级/卸载验证。
 
 ## 后续补齐的环境验收
 
@@ -158,7 +155,7 @@ P1 当前状态：ConPTY、Ctrl+C/强杀、resize 和主要调度边界已完成
 
 ## 下一里程碑
 
-认证会话、长期任务和文件传输改动已在 `6be9ca6` 提交。P0 核心能力与 P1 的 ConPTY/Ctrl+C/resize、FIFO、Queued 取消幂等、慢消费者和 TaskHost 突然退出收敛已在当前工作树实现并通过单机自动化；下一项是高次数退出/取消竞争压力测试、更细的 TaskHost 崩溃时点矩阵，同时继续审阅 P0 的异常审计及磁盘不足一致性。真实双机/双 VM 验收待测试环境具备后补齐。开始下一轮开发前需安装正式 .NET 8 SDK 或重新准备隔离工具链。
+P0–P1 功能已在当前工作树完成：任务终态/取消竞态、HostCrashed 语义、运行时输出限额、ConPTY 交互，以及安全本地 Privileged Broker、显式 elevated 路由和独立队列均已通过单机自动化。下一功能优先级是 P3 服务化与安装，包括 Agent/Broker 服务账户、共享密钥和显式 SID ACL、开机启动、故障恢复、防火墙、升级及卸载。真实双机/双 VM 验收待环境具备后补齐。
 
 ## 2026-07-10 本机回环验证
 
