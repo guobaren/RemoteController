@@ -4,6 +4,7 @@ param(
     [string]$InstallPath = (Join-Path $env:ProgramFiles 'RemoteController'),
     [string]$DataRoot = (Join-Path $env:ProgramData 'RemoteController'),
     [ValidateRange(1, 65535)][int]$TcpPort = 43001,
+    [string]$UiUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [switch]$NoFirewallRule
 )
 
@@ -15,7 +16,9 @@ $firewallRule = 'RemoteController Agent TCP'
 $agentExe = Join-Path $InstallPath 'Rc.Agent.exe'
 $brokerExe = Join-Path $InstallPath 'Rc.PrivilegedBroker.exe'
 $taskHostExe = Join-Path $InstallPath 'Rc.TaskHost.exe'
+$uiAgentExe = Join-Path $InstallPath 'Rc.UiAgent.exe'
 $secretPath = Join-Path $DataRoot 'broker-auth.key'
+$uiTaskName = 'RemoteControllerUiAgent'
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -35,7 +38,7 @@ function Set-ServiceEnvironment([string]$ServiceName, [string[]]$Entries) {
 
 if (-not $PSBoundParameters.ContainsKey('WhatIf')) { Assert-Administrator }
 $source = (Resolve-Path -LiteralPath $SourcePath).Path
-foreach ($file in @('Rc.Agent.exe', 'Rc.PrivilegedBroker.exe', 'Rc.TaskHost.exe')) {
+foreach ($file in @('Rc.Agent.exe', 'Rc.PrivilegedBroker.exe', 'Rc.TaskHost.exe', 'Rc.UiAgent.exe', 'Rc.Cli.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $file) -PathType Leaf)) { throw "Missing required publish artifact: $file" }
 }
 if ($PSCmdlet.ShouldProcess($InstallPath, 'Install RemoteController binaries')) {
@@ -67,6 +70,7 @@ if ($PSCmdlet.ShouldProcess("$agentService, $brokerService", 'Create or update W
 
 $agentAccountSid = ([Security.Principal.NTAccount]'NT AUTHORITY\LOCAL SERVICE').Translate([Security.Principal.SecurityIdentifier]).Value
 $brokerAccountSid = ([Security.Principal.NTAccount]'NT AUTHORITY\SYSTEM').Translate([Security.Principal.SecurityIdentifier]).Value
+$uiUserSid = ([Security.Principal.NTAccount]$UiUser).Translate([Security.Principal.SecurityIdentifier]).Value
 if ($PSCmdlet.ShouldProcess($DataRoot, 'Create and secure service data directory')) {
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
     & "$env:SystemRoot\System32\icacls.exe" $DataRoot '/inheritance:r' '/grant:r' "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-19:(OI)(CI)F" | Out-Host
@@ -74,12 +78,19 @@ if ($PSCmdlet.ShouldProcess($DataRoot, 'Create and secure service data directory
 }
 Set-ServiceEnvironment $agentService @(
     "RC_AGENT_DATA_ROOT=$DataRoot", "RC_AGENT_TCP_PORT=$TcpPort", "RC_TASKHOST_PATH=$taskHostExe",
-    "RC_BROKER_SECRET_PATH=$secretPath", "RC_AGENT_TRUSTED_SIDS=$brokerAccountSid"
+    "RC_BROKER_SECRET_PATH=$secretPath", "RC_AGENT_TRUSTED_SIDS=$brokerAccountSid", "RC_UI_AGENT_CLIENT_SID=$uiUserSid"
 )
 Set-ServiceEnvironment $brokerService @(
     "RC_AGENT_DATA_ROOT=$DataRoot", "RC_BROKER_ALLOWED_DATA_ROOT=$DataRoot",
     "RC_BROKER_SECRET_PATH=$secretPath", "RC_BROKER_CLIENT_SID=$agentAccountSid"
 )
+if ($PSCmdlet.ShouldProcess($uiTaskName, "Create or update UI Agent logon task for $UiUser")) {
+    $taskArgument = "/d /s /c `"set RC_UI_AGENT_CONTROL_CLIENT_SID=$agentAccountSid&& `"$uiAgentExe`" run`""
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument $taskArgument
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $UiUser
+    $principal = New-ScheduledTaskPrincipal -UserId $UiUser -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $uiTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+}
 if (-not $NoFirewallRule -and $PSCmdlet.ShouldProcess($firewallRule, "Allow inbound TCP $TcpPort")) {
     Get-NetFirewallRule -DisplayName $firewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     New-NetFirewallRule -DisplayName $firewallRule -Direction Inbound -Action Allow -Protocol TCP -LocalPort $TcpPort -Program $agentExe -Profile Private,Domain | Out-Null

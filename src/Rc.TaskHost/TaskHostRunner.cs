@@ -371,6 +371,11 @@ public sealed class TaskHostRunner : IAsyncDisposable
 
     private NamedPipeServerStream CreateControlPipeServer()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("TaskHost control-pipe ACLs require Windows.");
+        }
+
         if (string.IsNullOrWhiteSpace(request.ControlClientSid))
         {
             return new NamedPipeServerStream(

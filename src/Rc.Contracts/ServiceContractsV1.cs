@@ -81,4 +81,8 @@ public interface IUiServiceV1
     ValueTask<UiClipboardReadResponse> ReadClipboardAsync(UiClipboardReadRequest request, CancellationToken cancellationToken = default);
 
     ValueTask<UiClipboardWriteResponse> WriteClipboardAsync(UiClipboardWriteRequest request, CancellationToken cancellationToken = default);
+
+    ValueTask<UiAutomationTreeResponse> GetAutomationTreeAsync(UiAutomationTreeRequest request, CancellationToken cancellationToken = default);
+
+    ValueTask<UiAutomationActionResponse> ActOnAutomationElementAsync(UiAutomationActionRequest request, CancellationToken cancellationToken = default);
 }

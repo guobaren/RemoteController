@@ -16,6 +16,10 @@ public sealed record AgentOptions
 
     public string? BrokerSecretPath { get; init; } = Environment.GetEnvironmentVariable("RC_BROKER_SECRET_PATH");
 
+    public string UiRegistrationPipeName { get; init; } = Environment.GetEnvironmentVariable("RC_UI_REGISTRATION_PIPE") ?? "rc-ui-registration";
+
+    public string? UiAgentClientSid { get; init; } = Environment.GetEnvironmentVariable("RC_UI_AGENT_CLIENT_SID");
+
     public long LogQuotaBytes { get; init; } = ReadLong("RC_LOG_QUOTA_BYTES", 200L * 1024 * 1024);
     public long TaskOutputLimitBytes { get; init; } = ReadLong("RC_TASK_OUTPUT_LIMIT_BYTES", 200L * 1024 * 1024);
 

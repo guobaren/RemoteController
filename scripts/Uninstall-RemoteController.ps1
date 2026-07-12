@@ -9,6 +9,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $services = @('RemoteControllerAgent', 'RemoteControllerBroker')
 $firewallRule = 'RemoteController Agent TCP'
+$uiTaskName = 'RemoteControllerUiAgent'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -21,6 +22,9 @@ foreach ($name in $services) {
         & "$env:SystemRoot\System32\sc.exe" delete $name | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "Could not delete service $name" }
     }
+}
+if ($PSCmdlet.ShouldProcess($uiTaskName, 'Remove UI Agent logon task')) {
+    Unregister-ScheduledTask -TaskName $uiTaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 if ($PSCmdlet.ShouldProcess($firewallRule, 'Remove firewall rule')) {
     Get-NetFirewallRule -DisplayName $firewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule

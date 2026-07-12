@@ -1,7 +1,9 @@
 using Rc.Agent.Control;
+using Rc.Agent.Configuration;
 using Rc.Agent.Discovery;
 using Rc.Agent.Persistence;
 using Rc.Agent.Security;
+using Rc.Agent.Ui;
 using Rc.Contracts;
 using Rc.WindowsService;
 
@@ -46,8 +48,12 @@ static async Task RunAgentAsync(CancellationToken cancellationToken)
     var certificateManager = new AgentCertificateManager(stateStore);
     using var identity = await certificateManager.GetOrCreateAsync(cancellationToken);
     using var pairingCoordinator = new PairingCoordinator(stateStore, certificateManager);
+    var options = new AgentOptions();
+    var uiRegistry = new UiSessionRegistry();
+    var uiRegistration = new UiRegistrationServer(options.UiRegistrationPipeName, uiRegistry, options.UiAgentClientSid);
+    var uiRegistrationTask = uiRegistration.RunAsync(cancellationToken);
     await using var discoveryPublisher = new LanDiscoveryPublisher();
-    await using var controlListener = new TlsControlListener(identity, stateStore, pairingCoordinator, tcpPort);
+    await using var controlListener = new TlsControlListener(identity, stateStore, pairingCoordinator, tcpPort, options, uiRegistry);
     await controlListener.InitializeAsync(cancellationToken);
     controlListener.Start();
     var controlListenerTask = controlListener.RunAsync(cancellationToken);
@@ -70,6 +76,7 @@ static async Task RunAgentAsync(CancellationToken cancellationToken)
     }
     finally
     {
+        try { await uiRegistrationTask; } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         try
         {
             await controlListenerTask;

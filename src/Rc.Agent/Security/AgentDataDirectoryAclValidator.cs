@@ -48,7 +48,7 @@ public static class AgentDataDirectoryAclValidator
         }
     }
 
-    private static IReadOnlyList<SecurityIdentifier> ReadConfiguredTrustedSids()
+    private static SecurityIdentifier[] ReadConfiguredTrustedSids()
     {
         var configured = Environment.GetEnvironmentVariable("RC_AGENT_TRUSTED_SIDS");
         if (string.IsNullOrWhiteSpace(configured))
