@@ -110,6 +110,7 @@ internal static class UiAgentCommandDispatcher
             UiOperationKinds.MouseButton => Handle<UiMouseButtonRequest, UiSnapshotResponse>(command, request => new UiSnapshotResponse(DesktopInputController.SetMouseButton(request))),
             UiOperationKinds.MouseWheel => Handle<UiMouseWheelRequest, UiSnapshotResponse>(command, request => new UiSnapshotResponse(DesktopInputController.ScrollMouse(request))),
             UiOperationKinds.Key => Handle<UiKeyRequest, UiSnapshotResponse>(command, request => new UiSnapshotResponse(DesktopInputController.SetKeys(request))),
+            UiOperationKinds.Shortcut => Handle<UiShortcutRequest, UiSnapshotResponse>(command, request => new UiSnapshotResponse(DesktopInputController.SendShortcut(request))),
             UiOperationKinds.Text => Handle<UiTextRequest, UiSnapshotResponse>(command, request => new UiSnapshotResponse(DesktopInputController.TypeText(request))),
             UiOperationKinds.ClipboardRead => Handle<UiClipboardReadRequest, UiClipboardReadResponse>(command, DesktopClipboardController.Read),
             UiOperationKinds.ClipboardWrite => Handle<UiClipboardWriteRequest, UiClipboardWriteResponse>(command, DesktopClipboardController.Write),

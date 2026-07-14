@@ -192,6 +192,25 @@ public sealed class UiKeyRequest
 
 public sealed record UiTextRequest(UiTarget Target, string Text);
 
+public sealed class UiShortcutRequest
+{
+    public UiShortcutRequest(UiTarget target, IReadOnlyList<string> keys)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(keys);
+        if (keys.Count < 2 || keys.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("A shortcut requires at least two non-empty keys.", nameof(keys));
+        }
+
+        Target = target;
+        Keys = Array.AsReadOnly(keys.ToArray());
+    }
+
+    public UiTarget Target { get; }
+    public IReadOnlyList<string> Keys { get; }
+}
+
 public sealed class UiClipboardWriteRequest
 {
     private readonly byte[] data;

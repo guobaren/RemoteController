@@ -12,6 +12,7 @@ public static class UiOperationKinds
     public const string MouseButton = "mouse_button";
     public const string MouseWheel = "mouse_wheel";
     public const string Key = "key";
+    public const string Shortcut = "shortcut";
     public const string Text = "text";
     public const string ClipboardRead = "clipboard_read";
     public const string ClipboardWrite = "clipboard_write";
@@ -19,7 +20,7 @@ public static class UiOperationKinds
     public const string AutomationAction = "automation_action";
 
     public static bool IsSupported(string? operation) => operation is Snapshot or Displays or Windows or Screenshot or
-        WindowAction or MoveWindow or MouseMove or MouseButton or MouseWheel or Key or Text or ClipboardRead or ClipboardWrite or
+        WindowAction or MoveWindow or MouseMove or MouseButton or MouseWheel or Key or Shortcut or Text or ClipboardRead or ClipboardWrite or
         AutomationTree or AutomationAction;
 }
 

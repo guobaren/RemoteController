@@ -9,6 +9,7 @@ public static class DesktopInputController
     public static UiSessionSnapshot MoveMouse(UiMouseMoveRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ActivateWindowTarget(request.Target);
         var point = ResolvePoint(request.Target, request.X, request.Y);
         SendMouse(point.X, point.Y, NativeMethods.MouseMove | NativeMethods.MouseAbsolute | NativeMethods.MouseVirtualDesk, 0);
         return DesktopSnapshotProvider.Capture(includeWindows: false);
@@ -17,7 +18,7 @@ public static class DesktopInputController
     public static UiSessionSnapshot SetMouseButton(UiMouseButtonRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var point = ResolvePoint(request.Target, 0, 0);
+        _ = ResolveCurrentPointer(request.Target);
         var flags = request.Button switch
         {
             MouseButton.Left => request.IsDown ? NativeMethods.LeftDown : NativeMethods.LeftUp,
@@ -25,15 +26,21 @@ public static class DesktopInputController
             MouseButton.Right => request.IsDown ? NativeMethods.RightDown : NativeMethods.RightUp,
             _ => throw new ArgumentOutOfRangeException(nameof(request)),
         };
-        SendMouse(point.X, point.Y, flags | NativeMethods.MouseAbsolute | NativeMethods.MouseVirtualDesk, 0);
+        // MOUSEEVENTF_ABSOLUTE only applies to a move. Supplying it with a pure
+        // button transition can be accepted by SendInput without delivering the
+        // button message to the control under the cursor. The current pointer is
+        // validated above; send just the physical button transition.
+        SendMouseButton(flags);
         return DesktopSnapshotProvider.Capture(includeWindows: false);
     }
 
     public static UiSessionSnapshot ScrollMouse(UiMouseWheelRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var point = ResolvePoint(request.Target, 0, 0);
-        SendMouse(point.X, point.Y, NativeMethods.MouseWheel | NativeMethods.MouseAbsolute | NativeMethods.MouseVirtualDesk, request.Delta);
+        var point = ResolveCurrentPointer(request.Target);
+        // Keep the wheel event on the explicitly validated pointer position. This
+        // also avoids relying on an implicit cursor position in the interactive session.
+        SendMouse(point.X, point.Y, NativeMethods.MouseMove | NativeMethods.MouseWheel | NativeMethods.MouseAbsolute | NativeMethods.MouseVirtualDesk, request.Delta);
         return DesktopSnapshotProvider.Capture(includeWindows: false);
     }
 
@@ -65,6 +72,55 @@ public static class DesktopInputController
         return DesktopSnapshotProvider.Capture(includeWindows: false);
     }
 
+    public static UiSessionSnapshot SendShortcut(UiShortcutRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ActivateWindowTarget(request.Target);
+        EnsureTargetAvailable(request.Target);
+        SendShortcutToForegroundWindow(request.Keys);
+        return DesktopSnapshotProvider.Capture(includeWindows: false);
+    }
+
+    private static void SendShortcutToForegroundWindow(IReadOnlyList<string> keys)
+    {
+        var modifiers = string.Concat(keys.Where(IsModifierKey).Select(ToSendKeysModifier));
+        var nonModifiers = keys.Where(key => !IsModifierKey(key)).ToArray();
+        var sequence = modifiers + string.Concat(nonModifiers.Select(ToSendKeysKey));
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try { SendKeys.SendWait(sequence); }
+            catch (Exception exception) { failure = exception; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        if (failure is not null)
+        {
+            throw new InvalidOperationException("The shortcut could not be delivered to the foreground window.", failure);
+        }
+    }
+
+    private static bool IsModifierKey(string key) => key.Equals("Control", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("ControlKey", StringComparison.OrdinalIgnoreCase) || key.Equals("Shift", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("ShiftKey", StringComparison.OrdinalIgnoreCase) || key.Equals("Alt", StringComparison.OrdinalIgnoreCase) ||
+        key.Equals("Menu", StringComparison.OrdinalIgnoreCase);
+
+    private static string ToSendKeysModifier(string key) => key.Equals("Shift", StringComparison.OrdinalIgnoreCase) || key.Equals("ShiftKey", StringComparison.OrdinalIgnoreCase) ? "+" :
+        key.Equals("Alt", StringComparison.OrdinalIgnoreCase) || key.Equals("Menu", StringComparison.OrdinalIgnoreCase) ? "%" : "^";
+
+    private static string ToSendKeysKey(string key) => key.Length == 1 && char.IsLetterOrDigit(key[0]) ? key.ToLowerInvariant() : $"{{{key.ToUpperInvariant()}}}";
+
+    public static void NavigateBrowser(WindowTarget target, string url)
+    {
+        EnsureTargetAvailable(target);
+        _ = DesktopWindowController.Act(target.WindowHandle, WindowAction.Activate);
+        SendInputs([CreateKeyInput("Control", false), CreateKeyInput("L", false), CreateKeyInput("L", true), CreateKeyInput("Control", true)]);
+        var characters = url.SelectMany(character => new[] { CreateUnicodeInput(character, false), CreateUnicodeInput(character, true) }).ToArray();
+        SendInputs(characters);
+        SendInputs([CreateKeyInput("Enter", false), CreateKeyInput("Enter", true)]);
+    }
+
     private static (int X, int Y) ResolvePoint(UiTarget target, int x, int y)
     {
         EnsureTargetAvailable(target);
@@ -84,7 +140,39 @@ public static class DesktopInputController
         return (originX + x, originY + y);
     }
 
+    private static (int X, int Y) ResolveCurrentPointer(UiTarget target)
+    {
+        EnsureTargetAvailable(target);
+        var (originX, originY, width, height) = target switch
+        {
+            DisplayTarget display => DesktopSnapshotProvider.Capture(includeWindows: false).Displays
+                .Where(item => item.Index == display.DisplayIndex)
+                .Select(item => (item.X, item.Y, item.Width, item.Height))
+                .SingleOrDefault(),
+            WindowTarget window => ToBounds(DesktopSnapshotProvider.GetWindowSnapshot(window.WindowHandle)),
+            _ => throw new ArgumentOutOfRangeException(nameof(target)),
+        };
+        var pointer = Cursor.Position;
+        if (width <= 0 || height <= 0 || pointer.X < originX || pointer.Y < originY || pointer.X >= originX + width || pointer.Y >= originY + height)
+        {
+            throw new InvalidOperationException("Move the mouse within the explicit target before sending a mouse button or wheel event.");
+        }
+        return (pointer.X, pointer.Y);
+    }
+
     private static (int X, int Y, int Width, int Height) ToBounds(WindowSnapshot window) => (window.X, window.Y, window.Width, window.Height);
+
+    // Pointer movement intentionally remains independent from button transitions.
+    // A button command targeting a window brings that window to the foreground so
+    // SendInput is delivered to the requested interactive window, even when a
+    // separate move command was issued earlier.
+    private static void ActivateWindowTarget(UiTarget target)
+    {
+        if (target is WindowTarget window && !DesktopWindowController.IsForeground(window.WindowHandle))
+        {
+            _ = DesktopWindowController.Act(window.WindowHandle, WindowAction.Activate);
+        }
+    }
 
     private static void EnsureTargetAvailable(UiTarget target)
     {
@@ -107,18 +195,37 @@ public static class DesktopInputController
         {
             throw new ArgumentException($"'{key}' is not a supported virtual key.", nameof(key));
         }
+        var flags = keyUp ? NativeMethods.KeyUp : 0;
+        var keyboard = new NativeMethods.KeyboardInput { Flags = flags };
+        if (TryGetModifierScanCode(key, out var scanCode))
+        {
+            keyboard.ScanCode = scanCode;
+            keyboard.Flags |= NativeMethods.KeyScanCode;
+        }
+        else
+        {
+            keyboard.VirtualKey = (ushort)parsed;
+        }
         return new NativeMethods.Input
         {
             Type = NativeMethods.InputKeyboard,
             Union = new NativeMethods.InputUnion
             {
-                Keyboard = new NativeMethods.KeyboardInput
-                {
-                    VirtualKey = (ushort)parsed,
-                    Flags = keyUp ? NativeMethods.KeyUp : 0,
-                },
+                Keyboard = keyboard,
             },
         };
+    }
+
+    private static bool TryGetModifierScanCode(string key, out ushort scanCode)
+    {
+        scanCode = key.Trim().ToUpperInvariant() switch
+        {
+            "CONTROL" or "CONTROLKEY" => 0x1D,
+            "SHIFT" or "SHIFTKEY" => 0x2A,
+            "ALT" or "MENU" => 0x38,
+            _ => 0,
+        };
+        return scanCode != 0;
     }
 
     private static NativeMethods.Input CreateUnicodeInput(char character, bool keyUp) => new()
@@ -161,6 +268,17 @@ public static class DesktopInputController
         SendInputs([input]);
     }
 
+    private static void SendMouseButton(uint flags) => SendInputs([
+        new NativeMethods.Input
+        {
+            Type = NativeMethods.InputMouse,
+            Union = new NativeMethods.InputUnion
+            {
+                Mouse = new NativeMethods.MouseInput { Flags = flags },
+            },
+        },
+    ]);
+
     private static void SendInputs(IReadOnlyList<NativeMethods.Input> inputs)
     {
         var sent = NativeMethods.SendInput((uint)inputs.Count, [.. inputs], Marshal.SizeOf<NativeMethods.Input>());
@@ -186,6 +304,7 @@ public static class DesktopInputController
         public const uint MouseVirtualDesk = 0x4000;
         public const uint KeyUp = 0x0002;
         public const uint KeyUnicode = 0x0004;
+        public const uint KeyScanCode = 0x0008;
         public const int VirtualScreenLeft = 76;
         public const int VirtualScreenTop = 77;
         public const int VirtualScreenWidth = 78;
