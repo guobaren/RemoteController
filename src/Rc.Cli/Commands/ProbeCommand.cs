@@ -73,6 +73,16 @@ public static class ProbeCommand
             await error.WriteLineAsync($"Unable to connect: {exception.Message}");
             return 1;
         }
+        catch (IOException exception)
+        {
+            await error.WriteLineAsync($"Unable to communicate with the agent: {exception.Message}");
+            return 1;
+        }
+        catch (ObjectDisposedException exception)
+        {
+            await error.WriteLineAsync($"Unable to communicate with the agent: {exception.Message}");
+            return 1;
+        }
     }
 
     private static string? NormalizeFingerprint(string value)

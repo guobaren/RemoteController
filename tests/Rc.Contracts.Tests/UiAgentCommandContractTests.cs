@@ -25,6 +25,7 @@ public sealed class UiAgentCommandContractTests
     [Theory]
     [InlineData(UiOperationKinds.Snapshot)]
     [InlineData(UiOperationKinds.ClipboardWrite)]
+    [InlineData(UiOperationKinds.BrowserLaunch)]
     public void UiOperationKindsRecognizePublishedOperations(string operation)
     {
         Assert.True(UiOperationKinds.IsSupported(operation));
@@ -49,5 +50,16 @@ public sealed class UiAgentCommandContractTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new UiAutomationTreeRequest(new WindowTarget(1), maximumElements: 10_001));
         Assert.True(UiOperationKinds.IsSupported(UiOperationKinds.AutomationTree));
         Assert.True(UiOperationKinds.IsSupported(UiOperationKinds.AutomationAction));
+    }
+
+    [Fact]
+    public void BrowserRequestsRequireBoundedHttpUrlsAndPreserveTargets()
+    {
+        var request = new UiBrowserNavigateRequest(new WindowTarget(123), "https://example.test/path?q=1");
+
+        Assert.Equal(123, request.Target.WindowHandle);
+        Assert.Equal("https://example.test/path?q=1", request.Url);
+        Assert.Throws<ArgumentException>(() => new UiBrowserLaunchRequest(BrowserKind.Edge, "file:///C:/secret.txt"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new UiBrowserDomRequest(new WindowTarget(1), maximumDepth: 33));
     }
 }

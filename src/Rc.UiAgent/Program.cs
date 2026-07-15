@@ -25,9 +25,8 @@ try
         var controlPipe = "rc-ui-agent-session-" + Environment.ProcessId;
         var server = new UiAgentCommandServer(controlPipe, Environment.GetEnvironmentVariable("RC_UI_AGENT_CONTROL_CLIENT_SID"));
         var serverTask = server.RunAsync(cancellation.Token);
-        await RegisterAsync(registrationPipe, CreateRegistration(controlPipe));
         var registrationTask = MaintainRegistrationAsync(registrationPipe, controlPipe, cancellation.Token);
-        await Console.Out.WriteLineAsync("UiAgent registered and ready for commands.");
+        await Console.Out.WriteLineAsync("UiAgent started; registration will retry until the Agent is available.");
         try
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellation.Token);
@@ -152,19 +151,20 @@ static UiAgentRegistration CreateRegistration(string controlPipe) => new(
 
 static async Task MaintainRegistrationAsync(string registrationPipe, string controlPipe, CancellationToken cancellationToken)
 {
-    using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
     try
     {
-        while (await timer.WaitForNextTickAsync(cancellationToken))
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 await RegisterAsync(registrationPipe, CreateRegistration(controlPipe));
             }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                await Console.Error.WriteLineAsync($"UiAgent registration refresh failed: {exception.Message}");
+                await Console.Error.WriteLineAsync($"UiAgent registration failed; retrying: {exception.Message}");
             }
+
+            await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
         }
     }
     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

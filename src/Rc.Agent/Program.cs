@@ -45,8 +45,22 @@ static async Task RunAgentAsync(CancellationToken cancellationToken)
 
     await using var stateStore = new AgentStateStore(dataRoot);
     await stateStore.InitializeAsync(cancellationToken);
+    if (LocalTlsIdentityRepairRequest.IsRequested(dataRoot))
+    {
+        if (await stateStore.HasPairedControllerAsync(cancellationToken))
+        {
+            throw new InvalidOperationException("The requested TLS identity repair was not applied because this Agent has a paired controller. Unpair locally before repairing the TLS identity.");
+        }
+
+        await stateStore.DeleteDeviceIdentityAsync(cancellationToken);
+        LocalAgentIdentityFile.Clear(dataRoot);
+        LocalTlsHandshakeDiagnosticsFile.Clear(dataRoot);
+        LocalTlsIdentityRepairRequest.Clear(dataRoot);
+    }
+
     var certificateManager = new AgentCertificateManager(stateStore);
     using var identity = await certificateManager.GetOrCreateAsync(cancellationToken);
+    LocalAgentIdentityFile.Write(dataRoot, identity.DeviceId, identity.CertificateSha256Fingerprint);
     using var pairingCoordinator = new PairingCoordinator(stateStore, certificateManager);
     var options = new AgentOptions();
     var uiRegistry = new UiSessionRegistry();

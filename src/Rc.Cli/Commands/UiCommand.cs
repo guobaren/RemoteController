@@ -9,7 +9,7 @@ namespace Rc.Cli.Commands;
 
 public static class UiCommand
 {
-    private const string Usage = "Usage: rcctl ui status|snapshot|displays|windows|screenshot|window|move|mouse|key|type|clipboard|elements|element <IP:port> --fingerprint <SHA256> ... [--text]";
+    private const string Usage = "Usage: rcctl ui status|snapshot|displays|windows|screenshot|window|move|mouse|key|type|clipboard|elements|element|browser <IP:port> --fingerprint <SHA256> ... [--text]";
 
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error)
     {
@@ -77,6 +77,7 @@ public static class UiCommand
             "clipboard" when args.Length == 3 && args[1] == "write" => await SendAsync<UiClipboardWriteResponse>(endpoint, fingerprint, UiOperationKinds.ClipboardWrite, new UiClipboardWriteRequest(Encoding.UTF8.GetBytes(args[2]))).ConfigureAwait(false),
             "elements" => await ExecuteElementsAsync(args, endpoint, fingerprint).ConfigureAwait(false),
             "element" => await ExecuteElementActionAsync(args, endpoint, fingerprint).ConfigureAwait(false),
+            "browser" => await ExecuteBrowserAsync(args, endpoint, fingerprint).ConfigureAwait(false),
             _ => throw new ArgumentException("The UI command arguments are invalid."),
         };
     }
@@ -115,6 +116,49 @@ public static class UiCommand
         var value = args.Length == 6 ? args[5] : null;
         return SendAsync<UiAutomationActionResponse>(endpoint, fingerprint, UiOperationKinds.AutomationAction,
             new UiAutomationActionRequest(ParseWindow(args[2]), ParseRuntimeId(args[3]), action, value));
+    }
+
+    private static async Task<object> ExecuteBrowserAsync(string[] args, IPEndPoint endpoint, string fingerprint)
+    {
+        if (args.Length < 2)
+        {
+            throw new ArgumentException("Browser command arguments are required.");
+        }
+
+        return args[1].ToLowerInvariant() switch
+        {
+            "launch" when args.Length == 4 => await SendAsync<UiBrowserLaunchResponse>(endpoint, fingerprint, UiOperationKinds.BrowserLaunch,
+                new UiBrowserLaunchRequest(ParseEnum<BrowserKind>(args[2], "browser"), args[3])).ConfigureAwait(false),
+            "navigate" when args.Length == 4 => await SendAsync<UiBrowserNavigateResponse>(endpoint, fingerprint, UiOperationKinds.BrowserNavigate,
+                new UiBrowserNavigateRequest(ParseWindow(args[2]), args[3])).ConfigureAwait(false),
+            "dom" => await ExecuteBrowserDomAsync(args, endpoint, fingerprint).ConfigureAwait(false),
+            _ => throw new ArgumentException("Usage: rcctl ui browser <IP:port> --fingerprint <SHA256> launch <default|edge|chrome> <https-url> | navigate <handle> <https-url> | dom <handle> [--depth <0-32>] [--limit <1-10000>]."),
+        };
+    }
+
+    private static Task<UiBrowserDomResponse> ExecuteBrowserDomAsync(string[] args, IPEndPoint endpoint, string fingerprint)
+    {
+        if (args.Length < 3)
+        {
+            throw new ArgumentException("A browser window handle is required.");
+        }
+        var depth = 8;
+        var limit = 1_000;
+        for (var index = 3; index < args.Length; index += 2)
+        {
+            if (index + 1 >= args.Length)
+            {
+                throw new ArgumentException("A browser DOM option value is required.");
+            }
+            switch (args[index])
+            {
+                case "--depth": depth = ParseInt(args[index + 1], "depth"); break;
+                case "--limit": limit = ParseInt(args[index + 1], "limit"); break;
+                default: throw new ArgumentException("Unknown browser DOM option.");
+            }
+        }
+        return SendAsync<UiBrowserDomResponse>(endpoint, fingerprint, UiOperationKinds.BrowserDom,
+            new UiBrowserDomRequest(ParseWindow(args[2]), depth, limit));
     }
 
     private static async Task<object> ExecuteMouseAsync(string[] args, IPEndPoint endpoint, string fingerprint)

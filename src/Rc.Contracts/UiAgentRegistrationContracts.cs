@@ -18,10 +18,13 @@ public static class UiOperationKinds
     public const string ClipboardWrite = "clipboard_write";
     public const string AutomationTree = "automation_tree";
     public const string AutomationAction = "automation_action";
+    public const string BrowserLaunch = "browser_launch";
+    public const string BrowserNavigate = "browser_navigate";
+    public const string BrowserDom = "browser_dom";
 
     public static bool IsSupported(string? operation) => operation is Snapshot or Displays or Windows or Screenshot or
         WindowAction or MoveWindow or MouseMove or MouseButton or MouseWheel or Key or Shortcut or Text or ClipboardRead or ClipboardWrite or
-        AutomationTree or AutomationAction;
+        AutomationTree or AutomationAction or BrowserLaunch or BrowserNavigate or BrowserDom;
 }
 
 public sealed record UiAgentCommandRequest(int ProtocolVersion, string Operation, System.Text.Json.JsonElement Request);

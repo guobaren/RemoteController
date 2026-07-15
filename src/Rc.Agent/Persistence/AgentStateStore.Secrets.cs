@@ -98,6 +98,22 @@ public sealed partial class AgentStateStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task DeleteDeviceIdentityAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM device_identity WHERE id = 1;";
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> HasPairedControllerAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM paired_controller WHERE id = 1);";
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) != 0;
+    }
+
     public async Task<DeviceIdentity?> GetDeviceIdentityAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -234,6 +250,20 @@ public sealed partial class AgentStateStore
             reader.GetString(0),
             protector.Unprotect(reader.GetFieldValue<byte[]>(1)),
             DateTimeOffset.Parse(reader.GetString(2), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Reads only the paired controller identifier. This is safe for local
+    /// administrative commands running under a different Windows account from
+    /// the Agent service, because it never attempts to DPAPI-unprotect the
+    /// controller certificate.
+    /// </summary>
+    public async Task<string?> GetPairedControllerIdAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT controller_id FROM paired_controller WHERE id = 1;";
+        return (string?)await command.ExecuteScalarAsync(cancellationToken);
     }
 
     public async Task RemovePairedControllerAsync(CancellationToken cancellationToken = default)

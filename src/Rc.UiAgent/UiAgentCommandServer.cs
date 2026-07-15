@@ -88,6 +88,10 @@ public sealed class UiAgentCommandServer
         {
             await WriteFailureAsync(writer, ErrorCode.InvalidRequest, exception.Message, retryable: false).ConfigureAwait(false);
         }
+        catch (Exception exception)
+        {
+            await WriteFailureAsync(writer, ErrorCode.Unavailable, $"The UI operation failed: {exception.Message}", retryable: true).ConfigureAwait(false);
+        }
     }
 
     private static Task WriteFailureAsync(StreamWriter writer, ErrorCode code, string message, bool retryable) =>
@@ -116,6 +120,9 @@ internal static class UiAgentCommandDispatcher
             UiOperationKinds.ClipboardWrite => Handle<UiClipboardWriteRequest, UiClipboardWriteResponse>(command, DesktopClipboardController.Write),
             UiOperationKinds.AutomationTree => Handle<UiAutomationTreeRequest, UiAutomationTreeResponse>(command, UiAutomationController.GetTree),
             UiOperationKinds.AutomationAction => Handle<UiAutomationActionRequest, UiAutomationActionResponse>(command, UiAutomationController.Act),
+            UiOperationKinds.BrowserLaunch => Handle<UiBrowserLaunchRequest, UiBrowserLaunchResponse>(command, BrowserController.Launch),
+            UiOperationKinds.BrowserNavigate => Handle<UiBrowserNavigateRequest, UiBrowserNavigateResponse>(command, BrowserController.Navigate),
+            UiOperationKinds.BrowserDom => Handle<UiBrowserDomRequest, UiBrowserDomResponse>(command, BrowserController.GetDom),
             _ => throw new ArgumentException("The UI operation is not supported.", nameof(command)),
         };
         return JsonSerializer.SerializeToElement(result, ContractJson.Options);

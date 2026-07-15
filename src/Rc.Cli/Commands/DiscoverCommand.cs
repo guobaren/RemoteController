@@ -1,6 +1,8 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.Json;
+using Rc.Cli.Discovery;
 using Rc.Contracts;
 
 namespace Rc.Cli.Commands;
@@ -21,6 +23,7 @@ internal static class DiscoverCommand
 
         try
         {
+            DiscoveryFirewallRule.EnsureEnabled(MulticastPort);
             var devices = await ReceiveAsync(TimeSpan.FromMilliseconds(timeoutMilliseconds), cancellationToken);
             if (textMode)
             {
@@ -41,6 +44,11 @@ internal static class DiscoverCommand
             await WriteFailureAsync(output, new RemoteError(ErrorCode.Unavailable, $"LAN discovery socket failed: {exception.SocketErrorCode}.", Retryable: true));
             return 1;
         }
+        catch (InvalidOperationException exception)
+        {
+            await WriteFailureAsync(output, new RemoteError(ErrorCode.FailedPrecondition, exception.Message, Retryable: false));
+            return 1;
+        }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             await error.WriteLineAsync("Discovery was cancelled.");
@@ -53,7 +61,7 @@ internal static class DiscoverCommand
         using var client = new UdpClient(AddressFamily.InterNetwork);
         client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         client.Client.Bind(new IPEndPoint(IPAddress.Any, MulticastPort));
-        client.JoinMulticastGroup(MulticastAddress);
+        JoinAvailableMulticastInterfaces(client);
 
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeout);
@@ -84,9 +92,46 @@ internal static class DiscoverCommand
                 .ThenBy(row => row.DeviceId, StringComparer.Ordinal)
                 .ToArray();
         }
-        finally
+    }
+
+    private static void JoinAvailableMulticastInterfaces(UdpClient client)
+    {
+        var joined = false;
+        foreach (var networkInterface in NetworkInterface.GetAllNetworkInterfaces())
         {
-            client.DropMulticastGroup(MulticastAddress);
+            if (networkInterface.OperationalStatus != OperationalStatus.Up ||
+                !networkInterface.SupportsMulticast ||
+                networkInterface.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
+            {
+                continue;
+            }
+
+            foreach (var unicastAddress in networkInterface.GetIPProperties().UnicastAddresses)
+            {
+                var address = unicastAddress.Address;
+                if (address.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(address))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    client.JoinMulticastGroup(MulticastAddress, address);
+                    joined = true;
+                }
+                catch (SocketException)
+                {
+                    // A virtual adapter can report as multicast-capable while refusing
+                    // membership. Continue with the remaining active interfaces.
+                }
+            }
+        }
+
+        if (!joined)
+        {
+            // Preserve the previous default-route behaviour on systems that expose no
+            // usable IPv4 interface through NetworkInterface.
+            client.JoinMulticastGroup(MulticastAddress);
         }
     }
 

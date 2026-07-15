@@ -37,6 +37,7 @@ public sealed class TlsControlListener : IAsyncDisposable
     private readonly FileTransferService fileService;
     private readonly AgentOptions options;
     private readonly UiSessionRegistry? uiSessionRegistry;
+    private readonly string dataRoot;
     private bool started;
 
     public TlsControlListener(
@@ -57,6 +58,7 @@ public sealed class TlsControlListener : IAsyncDisposable
 
         this.identity = identity;
         this.stateStore = stateStore;
+        dataRoot = stateStore.DataRoot;
         this.pairingCoordinator = pairingCoordinator;
         this.options = options ?? new AgentOptions();
         this.uiSessionRegistry = uiSessionRegistry;
@@ -116,17 +118,23 @@ public sealed class TlsControlListener : IAsyncDisposable
         await using (var network = client.GetStream())
         await using (var tls = new SslStream(network, leaveInnerStreamOpen: false))
         {
+            var stage = "creating the server certificate context";
             try
             {
-                var certificateContext = SslStreamCertificateContext.Create(identity.Certificate, additionalCertificates: null, offline: true);
+                // Pass the persisted-key certificate directly to Schannel. On Windows services,
+                // wrapping an ECDSA certificate in SslStreamCertificateContext can make the
+                // private key unavailable during credential acquisition.
+                stage = "authenticating the TLS server";
                 await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
                 {
-                    ServerCertificateContext = certificateContext,
+                    ServerCertificate = identity.Certificate,
                     ClientCertificateRequired = false,
                     EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
                     CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
                 }, cancellationToken);
+                LocalTlsHandshakeDiagnosticsFile.Clear(dataRoot);
 
+                stage = "processing a TLS control request";
                 using var reader = new StreamReader(tls, new UTF8Encoding(false), false, MaximumLineLength, leaveOpen: true);
                 await using var writer = new StreamWriter(tls, new UTF8Encoding(false), MaximumLineLength, leaveOpen: true) { AutoFlush = true };
                 PendingControlSession? pendingSession = null;
@@ -236,15 +244,33 @@ public sealed class TlsControlListener : IAsyncDisposable
             }
             catch (AuthenticationException exception)
             {
-                Console.Error.WriteLine($"TLS authentication failed: {exception.Message}");
+                RecordTlsFailure(stage, exception);
             }
-            catch (IOException)
+            catch (IOException exception)
             {
+                RecordTlsFailure(stage, exception);
             }
             catch (Exception exception)
             {
-                Console.Error.WriteLine($"TLS control connection failed: {exception}");
+                RecordTlsFailure(stage, exception);
             }
+        }
+    }
+
+    private void RecordTlsFailure(string stage, Exception exception)
+    {
+        try
+        {
+            LocalTlsHandshakeDiagnosticsFile.Write(dataRoot, stage, exception);
+        }
+        catch
+        {
+            // Reporting must not affect the lifetime or security of a connection.
+        }
+
+        if (Environment.UserInteractive)
+        {
+            Console.Error.WriteLine($"TLS control connection failed while {stage}: {exception}");
         }
     }
 
@@ -265,7 +291,8 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
 
         await ExecuteUiOperationAsync(registration, UiOperationKinds.Snapshot,
-            JsonSerializer.SerializeToElement(new UiSnapshotRequest(false), ContractJson.Options), writer, cancellationToken).ConfigureAwait(false);
+            JsonSerializer.SerializeToElement(new UiSnapshotRequest(false), ContractJson.Options), writer, cancellationToken,
+            projectSnapshotAsStatus: true).ConfigureAwait(false);
     }
 
     private async Task HandleUiCommandAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
@@ -293,12 +320,12 @@ public sealed class TlsControlListener : IAsyncDisposable
         await ExecuteUiOperationAsync(registration, request.Operation, request.Request, writer, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task ExecuteUiOperationAsync(UiAgentRegistration registration, string operation, JsonElement request, StreamWriter writer, CancellationToken cancellationToken)
+    private static async Task ExecuteUiOperationAsync(UiAgentRegistration registration, string operation, JsonElement request, StreamWriter writer, CancellationToken cancellationToken, bool projectSnapshotAsStatus = false)
     {
         try
         {
             var result = await UiAgentControlClient.SendAsync(registration, operation, request, cancellationToken).ConfigureAwait(false);
-            if (operation == UiOperationKinds.Snapshot)
+            if (projectSnapshotAsStatus)
             {
                 var snapshot = result.Deserialize<UiSnapshotResponse>(ContractJson.Options)
                     ?? throw new InvalidDataException("The UiAgent returned an invalid snapshot.");
@@ -451,14 +478,25 @@ public sealed class TlsControlListener : IAsyncDisposable
             return;
         }
 
-        var invitation = await pairingCoordinator.CreateInvitationAsync(
-            new PairingEndpoint(localEndpoint.Address, localEndpoint.Port), cancellationToken);
-        Console.WriteLine();
-        Console.WriteLine("Pairing request received. Enter this one-time code on the controller:");
-        Console.WriteLine($"  {invitation.OneTimeCode}  (expires {invitation.ExpiresAtUtc.LocalDateTime:G})");
-
+        var pairingEndpoint = new PairingEndpoint(localEndpoint.Address, localEndpoint.Port);
+        var hasArmedPairingCode = LocalPairingCodeFile.TryReadCurrent(
+            stateStore.DataRoot,
+            DateTimeOffset.UtcNow,
+            out var armedPairingCode) && armedPairingCode!.IsArmed;
+        var invitation = hasArmedPairingCode
+            ? await pairingCoordinator.CreateInvitationAsync(
+                pairingEndpoint, armedPairingCode!.OneTimeCode, cancellationToken)
+            : await pairingCoordinator.CreateInvitationAsync(pairingEndpoint, cancellationToken);
         var binding = await pairingCoordinator.BindControllerAsync(
             invitation.PairingId, request.ControllerId, request.ControllerCertificate, cancellationToken);
+        LocalPairingCodeFile.Write(stateStore.DataRoot, invitation);
+        if (Environment.UserInteractive)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Pairing request received. Enter this one-time code on the controller:");
+            Console.WriteLine($"  {invitation.OneTimeCode}  (expires {invitation.ExpiresAtUtc.LocalDateTime:G})");
+        }
+
         var agentRound1 = pairingCoordinator.CreateAgentRound1(invitation.PairingId);
         await AuditAsync("pairing.started", request.ControllerId, invitation.PairingId.ToString("N"), true, null, null, cancellationToken).ConfigureAwait(false);
         await WriteSuccessAsync(writer, new ControlPairStartResponse(ToContract(binding), invitation.ExpiresAtUtc, agentRound1));
@@ -531,6 +569,7 @@ public sealed class TlsControlListener : IAsyncDisposable
                 new PairingCompletionProof(request.ConfirmationMac, request.CertificateSignature),
                 cancellationToken);
             await stateStore.ResetPairingFailuresAsync(cancellationToken).ConfigureAwait(false);
+            LocalPairingCodeFile.Delete(stateStore.DataRoot);
             await AuditAsync("pairing.completed", paired.ControllerId, request.PairingId.ToString("N"), true, null, null, cancellationToken).ConfigureAwait(false);
             await WriteSuccessAsync(writer, new ControlPairCompleteResponse(paired.ControllerId, paired.PairedAtUtc));
         }

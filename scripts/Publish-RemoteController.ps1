@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$OutputPath = (Join-Path $PSScriptRoot '..\artifacts\publish'),
+    [string]$OutputPath,
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release'
 )
 
@@ -8,6 +8,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    $OutputPath = Join-Path $root 'artifacts\publish'
+}
 $output = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($OutputPath)) { $OutputPath } else { Join-Path $root $OutputPath }))
 $dotnet = Join-Path $root '.dotnet\dotnet.exe'
 if (-not (Test-Path -LiteralPath $dotnet -PathType Leaf)) { $dotnet = 'dotnet' }
@@ -16,6 +19,8 @@ $projects = @{
     'Rc.PrivilegedBroker' = 'src\Rc.PrivilegedBroker\Rc.PrivilegedBroker.csproj'
     'Rc.TaskHost' = 'src\Rc.TaskHost\Rc.TaskHost.csproj'
     'Rc.UiAgent' = 'src\Rc.UiAgent\Rc.UiAgent.csproj'
+    'Rc.UiTestApp' = 'src\Rc.UiTestApp\Rc.UiTestApp.csproj'
+    'Rc.InteractiveTestApp' = 'src\Rc.InteractiveTestApp\Rc.InteractiveTestApp.csproj'
     'Rc.Cli' = 'src\Rc.Cli\Rc.Cli.csproj'
 }
 
@@ -31,7 +36,13 @@ foreach ($name in $projects.Keys) {
     Copy-Item -LiteralPath $executable -Destination (Join-Path $output "$name.exe") -Force
 }
 
+$packageFiles = @('Install-RemoteController.ps1', 'Uninstall-RemoteController.ps1', 'Start-RemoteController.cmd', 'Start-RemoteControllerUiTest.cmd', 'Repair-RemoteControllerTlsIdentity.ps1', 'Test-RemoteControllerUi.ps1')
 foreach ($name in $projects.Keys) {
     if (-not (Test-Path -LiteralPath (Join-Path $output "$name.exe") -PathType Leaf)) { throw "Missing packaged executable: $name.exe" }
 }
-Write-Host "Self-contained Windows x64 publish complete: $output"
+foreach ($file in $packageFiles) {
+    $sourceFile = Join-Path $PSScriptRoot $file
+    if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "Missing deployment script: $file" }
+    Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $output $file) -Force
+}
+Write-Host "Self-contained Windows x64 deployment package complete: $output"

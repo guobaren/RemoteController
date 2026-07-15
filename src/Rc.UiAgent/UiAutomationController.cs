@@ -31,6 +31,17 @@ public static class UiAutomationController
         });
     }
 
+    public static UiAutomationElementSnapshot GetBrowserDocument(WindowTarget target, int maximumDepth, int maximumElements)
+    {
+        return StaThreadDispatcher.Run(() =>
+        {
+            var root = GetWindowRoot(target);
+            var document = FindDocument(root) ?? throw new InvalidOperationException("The browser has not exposed a web document yet.");
+            var remaining = maximumElements;
+            return CreateSnapshot(document, maximumDepth, ref remaining);
+        });
+    }
+
     private static AutomationElement GetWindowRoot(WindowTarget target)
     {
         if (!DesktopSnapshotProvider.IsInCurrentSession(target.WindowHandle))
@@ -105,6 +116,29 @@ public static class UiAutomationController
             try
             {
                 var match = FindByRuntimeId(child, runtimeId);
+                if (match is not null)
+                {
+                    return match;
+                }
+            }
+            catch (ElementNotAvailableException)
+            {
+            }
+        }
+        return null;
+    }
+
+    private static AutomationElement? FindDocument(AutomationElement root)
+    {
+        if (root.Current.ControlType == ControlType.Document)
+        {
+            return root;
+        }
+        for (var child = TreeWalker.RawViewWalker.GetFirstChild(root); child is not null; child = TreeWalker.RawViewWalker.GetNextSibling(child))
+        {
+            try
+            {
+                var match = FindDocument(child);
                 if (match is not null)
                 {
                     return match;

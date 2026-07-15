@@ -1,20 +1,20 @@
-# Security model
+# 安全模型
 
-## Trust boundaries
+## 信任边界
 
-- UDP discovery is an unauthenticated hint. The controller pins the Agent SHA-256 certificate fingerprint before pairing or control traffic.
-- Pairing uses a local one-time code and J-PAKE transcript. The endpoint persists only one controller certificate.
-- Control calls run through a TLS-pinned ECDSA challenge session. The Agent rejects calls from an unpaired or stale controller session.
-- Agent state, keys, audit data, transfer state, and task output reside under an ACL-protected data root. Unsafe pre-existing ACLs prevent startup.
-- Elevated work is routed only through the local privileged Broker pipe, protected by explicit SID ACLs and HMAC request authentication. The Broker has no TCP listener.
+- UDP 发现只是未经身份验证的提示。控制端会在配对或传输控制流量前固定 Agent 的 SHA-256 证书指纹。
+- 配对使用本地一次性代码和 J-PAKE 记录。受管端仅持久化一张控制端证书。
+- 控制调用通过已固定 TLS 身份的 ECDSA 挑战会话执行。Agent 会拒绝来自未配对或过期控制端会话的调用。
+- Agent 状态、密钥、审计数据、传输状态和任务输出都存放在受 ACL 保护的数据根目录中。不安全的既有 ACL 会阻止启动。
+- 提权工作只会经由本地特权 Broker 管道转发，该管道由显式 SID ACL 和 HMAC 请求身份验证保护。Broker 不监听 TCP。
 
-## UI boundary
+## UI 边界
 
-`Rc.UiAgent` runs as the selected logged-in user. Its registration and command pipes use explicit SIDs in service deployments; in development they use `CurrentUserOnly`. UI actions require an active session and an explicit display, window, or UI Automation element rooted beneath an explicit window. UAC secure desktop is never automated.
+`Rc.UiAgent` 以选定的已登录用户身份运行。在服务部署中，它的注册和命令管道使用显式 SID；开发环境则使用 `CurrentUserOnly`。UI 操作需要活动会话以及明确指定的显示器、窗口，或位于明确窗口之下的 UI Automation 元素。绝不自动化 UAC 安全桌面。
 
-## Operational safeguards
+## 运维防护措施
 
-- File operations stay beneath `RC_AGENT_FILE_ROOT`, reject traversal/reparse points, and use atomic replacement for small writes.
-- Transfers verify per-chunk and final SHA-256 hashes and expire unfinished sessions.
-- Task, log, audit, and transfer quotas bound persistent resource consumption.
-- `rc-agent unpair` is local-only and invalidates active authentication sessions.
+- 文件操作始终限制在 `RC_AGENT_FILE_ROOT` 下，拒绝路径遍历和重解析点；小文件写入使用原子替换。
+- 传输会验证每个分块及最终的 SHA-256 哈希，并使未完成会话过期。
+- 任务、日志、审计和传输配额用于限制持久资源消耗。
+- `rc-agent unpair` 只能在本地执行，且会使活动身份验证会话失效。

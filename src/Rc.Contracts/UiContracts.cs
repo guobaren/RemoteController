@@ -366,3 +366,70 @@ public sealed class UiAutomationActionRequest
 }
 
 public sealed record UiAutomationActionResponse(UiAutomationElementSnapshot Element);
+
+/// <summary>Supported browsers for first-class browser automation.</summary>
+public enum BrowserKind
+{
+    Default,
+    Edge,
+    Chrome,
+}
+
+public sealed class UiBrowserLaunchRequest
+{
+    public UiBrowserLaunchRequest(BrowserKind browser, string url)
+    {
+        Browser = browser;
+        Url = ValidateUrl(url);
+    }
+
+    public BrowserKind Browser { get; }
+    public string Url { get; }
+
+    internal static string ValidateUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.Length > 8_192 || !Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https"))
+        {
+            throw new ArgumentException("A bounded absolute HTTP or HTTPS URL is required.", nameof(url));
+        }
+        return uri.AbsoluteUri;
+    }
+}
+
+public sealed record UiBrowserLaunchResponse(BrowserKind Browser, WindowSnapshot Window);
+
+public sealed class UiBrowserNavigateRequest
+{
+    public UiBrowserNavigateRequest(WindowTarget target, string url)
+    {
+        Target = target ?? throw new ArgumentNullException(nameof(target));
+        Url = UiBrowserLaunchRequest.ValidateUrl(url);
+    }
+
+    public WindowTarget Target { get; }
+    public string Url { get; }
+}
+
+public sealed record UiBrowserNavigateResponse(WindowSnapshot Window);
+
+public sealed class UiBrowserDomRequest
+{
+    public UiBrowserDomRequest(WindowTarget target, int maximumDepth = 8, int maximumElements = 1_000)
+    {
+        Target = target ?? throw new ArgumentNullException(nameof(target));
+        if (maximumDepth is < 0 or > 32 || maximumElements is < 1 or > 10_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumDepth), "DOM traversal limits are invalid.");
+        }
+        MaximumDepth = maximumDepth;
+        MaximumElements = maximumElements;
+    }
+
+    public WindowTarget Target { get; }
+    public int MaximumDepth { get; }
+    public int MaximumElements { get; }
+}
+
+/// <summary>DOM view of the visible web page, without browser chrome.</summary>
+public sealed record UiBrowserDomResponse(WindowSnapshot Window, UiAutomationElementSnapshot Document);

@@ -1,34 +1,23 @@
-# UI shortcut and browser validation — 2026-07-15
+# UI 快捷键与浏览器验证 — 2026-07-15
 
-## Delivered
+## 已交付内容
 
-- Added the `shortcut` UI operation end-to-end (contracts, CLI and UI agent).
-- Shortcut delivery first activates and verifies the requested top-level window,
-  then sends the combination as one operation.  Existing low-level `key` calls
-  remain available for separately issued press and release commands.
-- Window activation now waits for the requested window to become foreground
-  before input is sent.
+- 已端到端添加 `shortcut` UI 操作（契约、CLI 和 UI Agent）。
+- 快捷键投递会先激活并验证指定的顶层窗口，再将组合键作为一次操作发送。现有的低级 `key` 调用仍可用于分别发出按下和释放命令。
+- 现在会等待指定窗口成为前台窗口后再发送输入。
 
-## VM verification
+## VM 验证
 
-The Windows test VM accepted the following browser workflow in its own Edge
-session:
+Windows 测试 VM 在自身的 Edge 会话中接受了以下浏览器工作流：
 
-1. Put `https://cn.bing.com/search?q=长沙天气` on the VM clipboard.
-2. Send `shortcut ... Control L` to the Edge window.
-3. Send `shortcut ... Control V`, then separate `key Enter down` and
-   `key Enter up` commands.
+1. 将 `https://cn.bing.com/search?q=长沙天气` 放入 VM 剪贴板。
+2. 向 Edge 窗口发送 `shortcut ... Control L`。
+3. 发送 `shortcut ... Control V`，再分别发送 `key Enter down` 和 `key Enter up` 命令。
 
-The resulting Bing page showed the query and weather result for `长沙天气`.
-This also confirms that the shortcut path keeps foreground focus through the
-paste.  Direct Unicode `type` input is not reliable in Edge's address bar;
-clipboard paste is the supported browser-address-bar path.
+产生的 Bing 页面显示了 `长沙天气` 的查询与天气结果。这也确认快捷键路径在粘贴过程中保持前台焦点。直接使用 Unicode `type` 输入在 Edge 地址栏中并不可靠；剪贴板粘贴是受支持的浏览器地址栏输入方式。
 
-## UI acceptance status
+## UI 验收状态
 
-- Mouse movement, separate button down/up, and wheel behavior were verified in
-  the UI test application.
-- Keyboard entry and clipboard round-trip were verified in the VM UI test
-  application.
-- The UI agent and the agent service were both republished before exercising
-  the newly registered shortcut operation.
+- 已在 UI 测试程序中验证鼠标移动、独立按键按下/释放和滚轮行为。
+- 已在 VM UI 测试程序中验证键盘输入和剪贴板往返读写。
+- 在执行新注册的快捷键操作前，已重新发布 UI Agent 和 Agent 服务。

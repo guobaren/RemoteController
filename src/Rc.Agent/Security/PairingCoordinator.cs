@@ -292,7 +292,7 @@ public static class PairingTranscript
 public sealed class PairingCoordinator : IDisposable
 {
     private const int MaxControllerCertificateBytes = 16 * 1024;
-    private const string OneTimeCodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+    internal const string OneTimeCodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
     private readonly AgentStateStore stateStore;
     private readonly AgentCertificateManager certificateManager;
     private readonly PairingCoordinatorOptions options;
@@ -322,9 +322,28 @@ public sealed class PairingCoordinator : IDisposable
 
     public int ActiveInvitationCount => invitations.Count;
 
-    public async Task<PairingInvitation> CreateInvitationAsync(
+    public Task<PairingInvitation> CreateInvitationAsync(
         PairingEndpoint agentEndpoint,
+        CancellationToken cancellationToken = default) =>
+        CreateInvitationCoreAsync(agentEndpoint, oneTimeCode: null, cancellationToken);
+
+    /// <summary>
+    /// Creates an invitation with a locally armed code. The caller must obtain
+    /// that code through a protected local channel before it is used here.
+    /// </summary>
+    public Task<PairingInvitation> CreateInvitationAsync(
+        PairingEndpoint agentEndpoint,
+        string oneTimeCode,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(oneTimeCode);
+        return CreateInvitationCoreAsync(agentEndpoint, oneTimeCode, cancellationToken);
+    }
+
+    private async Task<PairingInvitation> CreateInvitationCoreAsync(
+        PairingEndpoint agentEndpoint,
+        string? oneTimeCode,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(agentEndpoint);
         ThrowIfDisposed();
@@ -343,7 +362,9 @@ public sealed class PairingCoordinator : IDisposable
             using var identity = await certificateManager.GetOrCreateAsync(cancellationToken);
             var pairingId = Guid.NewGuid();
             var expiresAtUtc = timeProvider.GetUtcNow().Add(options.InvitationLifetime);
-            var code = CreateOneTimeCode(options.OneTimeCodeLength);
+            var code = oneTimeCode is null
+                ? CreateOneTimeCode(options.OneTimeCodeLength)
+                : ValidateOneTimeCode(oneTimeCode);
             var certificateFingerprint = SHA256.HashData(identity.Certificate.RawData);
             var spkiFingerprint = CertificateFingerprints.GetSpkiSha256(identity.Certificate);
             var state = new PairingState(
@@ -663,6 +684,19 @@ public sealed class PairingCoordinator : IDisposable
         }
 
         return code;
+    }
+
+    private char[] ValidateOneTimeCode(string oneTimeCode)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(oneTimeCode);
+        if (oneTimeCode.Length != options.OneTimeCodeLength || oneTimeCode.Any(character => !OneTimeCodeAlphabet.Contains(character)))
+        {
+            throw new ArgumentException(
+                $"The one-time pairing code must contain exactly {options.OneTimeCodeLength} characters from the supported pairing alphabet.",
+                nameof(oneTimeCode));
+        }
+
+        return oneTimeCode.ToCharArray();
     }
 
     private static string NormalizeControllerId(string controllerId)

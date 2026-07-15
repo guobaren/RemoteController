@@ -23,6 +23,7 @@ public static class AgentDataDirectoryAclValidator
             currentUser,
             new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
             new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null),
         };
         trustedSids.UnionWith(configuredTrustedSids);
         var security = new DirectoryInfo(dataRoot).GetAccessControl(AccessControlSections.Access);
@@ -78,6 +79,7 @@ public static class AgentDataDirectoryAclValidator
         AddFullControl(security, currentUser);
         AddFullControl(security, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
         AddFullControl(security, new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
+        AddFullControl(security, new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null));
         foreach (var sid in additionalTrustedSids)
         {
             AddFullControl(security, sid);
