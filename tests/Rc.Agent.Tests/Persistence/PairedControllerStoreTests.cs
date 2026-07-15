@@ -16,6 +16,7 @@ public sealed class PairedControllerStoreTests
         var pairedController = await store.GetPairedControllerAsync();
 
         Assert.Null(pairedController);
+        Assert.Null(await store.GetPairedControllerIdAsync());
     }
 
     [Fact]
@@ -35,6 +36,7 @@ public sealed class PairedControllerStoreTests
         Assert.Equal(pairedController.ControllerId, restored.ControllerId);
         Assert.Equal(pairedController.Certificate, restored.Certificate);
         Assert.Equal(pairedController.PairedAtUtc, restored.PairedAtUtc);
+        Assert.Equal(pairedController.ControllerId, await store.GetPairedControllerIdAsync());
 
         await using var connection = new SqliteConnection($"Data Source={store.DatabasePath}");
         await connection.OpenAsync();

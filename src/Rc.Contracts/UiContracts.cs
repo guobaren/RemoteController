@@ -192,6 +192,25 @@ public sealed class UiKeyRequest
 
 public sealed record UiTextRequest(UiTarget Target, string Text);
 
+public sealed class UiShortcutRequest
+{
+    public UiShortcutRequest(UiTarget target, IReadOnlyList<string> keys)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(keys);
+        if (keys.Count < 2 || keys.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new ArgumentException("A shortcut requires at least two non-empty keys.", nameof(keys));
+        }
+
+        Target = target;
+        Keys = Array.AsReadOnly(keys.ToArray());
+    }
+
+    public UiTarget Target { get; }
+    public IReadOnlyList<string> Keys { get; }
+}
+
 public sealed class UiClipboardWriteRequest
 {
     private readonly byte[] data;
@@ -229,3 +248,188 @@ public sealed class UiClipboardReadResponse
 
     public string Format { get; }
 }
+
+public sealed class UiAutomationElementSnapshot
+{
+    public UiAutomationElementSnapshot(
+        IReadOnlyList<int> runtimeId,
+        string name,
+        string automationId,
+        string controlType,
+        string className,
+        int nativeWindowHandle,
+        int x,
+        int y,
+        int width,
+        int height,
+        bool isEnabled,
+        bool isOffscreen,
+        IReadOnlyList<UiAutomationElementSnapshot> children)
+    {
+        ArgumentNullException.ThrowIfNull(runtimeId);
+        ArgumentNullException.ThrowIfNull(children);
+        if (runtimeId.Count == 0)
+        {
+            throw new ArgumentException("A UI Automation runtime ID is required.", nameof(runtimeId));
+        }
+
+        RuntimeId = Array.AsReadOnly(runtimeId.ToArray());
+        Name = name ?? string.Empty;
+        AutomationId = automationId ?? string.Empty;
+        ControlType = controlType ?? string.Empty;
+        ClassName = className ?? string.Empty;
+        NativeWindowHandle = nativeWindowHandle;
+        X = x;
+        Y = y;
+        Width = width;
+        Height = height;
+        IsEnabled = isEnabled;
+        IsOffscreen = isOffscreen;
+        Children = Array.AsReadOnly(children.ToArray());
+    }
+
+    public IReadOnlyList<int> RuntimeId { get; }
+    public string Name { get; }
+    public string AutomationId { get; }
+    public string ControlType { get; }
+    public string ClassName { get; }
+    public int NativeWindowHandle { get; }
+    public int X { get; }
+    public int Y { get; }
+    public int Width { get; }
+    public int Height { get; }
+    public bool IsEnabled { get; }
+    public bool IsOffscreen { get; }
+    public IReadOnlyList<UiAutomationElementSnapshot> Children { get; }
+}
+
+public sealed class UiAutomationTreeRequest
+{
+    public UiAutomationTreeRequest(WindowTarget target, int maximumDepth = 8, int maximumElements = 1_000)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (maximumDepth is < 0 or > 32)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumDepth));
+        }
+        if (maximumElements is < 1 or > 10_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumElements));
+        }
+        Target = target;
+        MaximumDepth = maximumDepth;
+        MaximumElements = maximumElements;
+    }
+
+    public WindowTarget Target { get; }
+    public int MaximumDepth { get; }
+    public int MaximumElements { get; }
+}
+
+public sealed record UiAutomationTreeResponse(UiAutomationElementSnapshot Root);
+
+public enum UiAutomationAction
+{
+    Focus,
+    Invoke,
+    SetValue,
+    Select,
+    Expand,
+    Collapse,
+}
+
+public sealed class UiAutomationActionRequest
+{
+    public UiAutomationActionRequest(WindowTarget target, IReadOnlyList<int> runtimeId, UiAutomationAction action, string? value = null)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(runtimeId);
+        if (runtimeId.Count == 0)
+        {
+            throw new ArgumentException("A UI Automation runtime ID is required.", nameof(runtimeId));
+        }
+        if (action == UiAutomationAction.SetValue && value is null)
+        {
+            throw new ArgumentException("SetValue requires a value.", nameof(value));
+        }
+
+        Target = target;
+        RuntimeId = Array.AsReadOnly(runtimeId.ToArray());
+        Action = action;
+        Value = value;
+    }
+
+    public WindowTarget Target { get; }
+    public IReadOnlyList<int> RuntimeId { get; }
+    public UiAutomationAction Action { get; }
+    public string? Value { get; }
+}
+
+public sealed record UiAutomationActionResponse(UiAutomationElementSnapshot Element);
+
+/// <summary>Supported browsers for first-class browser automation.</summary>
+public enum BrowserKind
+{
+    Default,
+    Edge,
+    Chrome,
+}
+
+public sealed class UiBrowserLaunchRequest
+{
+    public UiBrowserLaunchRequest(BrowserKind browser, string url)
+    {
+        Browser = browser;
+        Url = ValidateUrl(url);
+    }
+
+    public BrowserKind Browser { get; }
+    public string Url { get; }
+
+    internal static string ValidateUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.Length > 8_192 || !Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https"))
+        {
+            throw new ArgumentException("A bounded absolute HTTP or HTTPS URL is required.", nameof(url));
+        }
+        return uri.AbsoluteUri;
+    }
+}
+
+public sealed record UiBrowserLaunchResponse(BrowserKind Browser, WindowSnapshot Window);
+
+public sealed class UiBrowserNavigateRequest
+{
+    public UiBrowserNavigateRequest(WindowTarget target, string url)
+    {
+        Target = target ?? throw new ArgumentNullException(nameof(target));
+        Url = UiBrowserLaunchRequest.ValidateUrl(url);
+    }
+
+    public WindowTarget Target { get; }
+    public string Url { get; }
+}
+
+public sealed record UiBrowserNavigateResponse(WindowSnapshot Window);
+
+public sealed class UiBrowserDomRequest
+{
+    public UiBrowserDomRequest(WindowTarget target, int maximumDepth = 8, int maximumElements = 1_000)
+    {
+        Target = target ?? throw new ArgumentNullException(nameof(target));
+        if (maximumDepth is < 0 or > 32 || maximumElements is < 1 or > 10_000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maximumDepth), "DOM traversal limits are invalid.");
+        }
+        MaximumDepth = maximumDepth;
+        MaximumElements = maximumElements;
+    }
+
+    public WindowTarget Target { get; }
+    public int MaximumDepth { get; }
+    public int MaximumElements { get; }
+}
+
+/// <summary>DOM view of the visible web page, without browser chrome.</summary>
+public sealed record UiBrowserDomResponse(WindowSnapshot Window, UiAutomationElementSnapshot Document);

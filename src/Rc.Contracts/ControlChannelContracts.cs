@@ -47,6 +47,18 @@ public const string FileManifest = "file_manifest";
     public const string TransferReadChunk = "transfer_read_chunk";
     public const string TransferComplete = "transfer_complete";
     public const string TransferStatus = "transfer_status";
+    public const string UiStatus = "ui_status";
+    public const string UiCommand = "ui_command";
+}
+
+public sealed record ControlUiStatusRequest(int ProtocolVersion, string ControllerId)
+{
+    public string Kind => ControlMessageKinds.UiStatus;
+}
+
+public sealed record ControlUiCommandRequest(int ProtocolVersion, string ControllerId, string Operation, System.Text.Json.JsonElement Request)
+{
+    public string Kind => ControlMessageKinds.UiCommand;
 }
 
 public sealed record ControlPairStartRequest(

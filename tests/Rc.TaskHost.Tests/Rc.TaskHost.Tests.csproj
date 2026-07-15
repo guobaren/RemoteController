@@ -13,5 +13,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rc.TaskHost\Rc.TaskHost.csproj" />
+    <ProjectReference Include="..\..\src\Rc.InteractiveTestApp\Rc.InteractiveTestApp.csproj" />
   </ItemGroup>
 </Project>

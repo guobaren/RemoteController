@@ -115,6 +115,20 @@ public sealed class AgentDataDirectoryAclValidatorTests
     }
 
     [Fact]
+    public void EnsureSafeAllowsWritePermissionForLocalService()
+    {
+        using var directory = new TemporaryDirectory();
+        var security = new DirectoryInfo(directory.Path).GetAccessControl();
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null),
+            FileSystemRights.WriteData,
+            AccessControlType.Allow));
+        new DirectoryInfo(directory.Path).SetAccessControl(security);
+
+        AgentDataDirectoryAclValidator.EnsureSafe(directory.Path);
+    }
+
+    [Fact]
     public void EnsureSafeAllowsWritePermissionForAConfiguredTrustedSid()
     {
         using var directory = new TemporaryDirectory();

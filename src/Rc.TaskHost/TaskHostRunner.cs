@@ -121,9 +121,30 @@ public sealed class TaskHostRunner : IAsyncDisposable
         }
 
         await TryWriteInterruptByteAsync(runningProcess, cancellationToken).ConfigureAwait(false);
+
+        var remainingGrace = request.CancellationGracePeriod;
+        var terminal = pseudoConsole;
+        var terminalCloseDelay = TimeSpan.FromSeconds(1);
+        if (terminal is not null && remainingGrace > terminalCloseDelay)
+        {
+            try
+            {
+                await runningProcess.WaitForExitAsync(CancellationToken.None).WaitAsync(terminalCloseDelay, cancellationToken).ConfigureAwait(false);
+                MarkCancellationObserved(runningProcess);
+                return;
+            }
+            catch (TimeoutException)
+            {
+                // Ctrl+C was not observed promptly by this pseudo-console child.
+            }
+
+            terminal.CloseConsole();
+            remainingGrace -= terminalCloseDelay;
+        }
+
         try
         {
-            await runningProcess.WaitForExitAsync(CancellationToken.None).WaitAsync(request.CancellationGracePeriod, cancellationToken).ConfigureAwait(false);
+            await runningProcess.WaitForExitAsync(CancellationToken.None).WaitAsync(remainingGrace, cancellationToken).ConfigureAwait(false);
             MarkCancellationObserved(runningProcess);
             return;
         }
@@ -371,6 +392,11 @@ public sealed class TaskHostRunner : IAsyncDisposable
 
     private NamedPipeServerStream CreateControlPipeServer()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("TaskHost control-pipe ACLs require Windows.");
+        }
+
         if (string.IsNullOrWhiteSpace(request.ControlClientSid))
         {
             return new NamedPipeServerStream(

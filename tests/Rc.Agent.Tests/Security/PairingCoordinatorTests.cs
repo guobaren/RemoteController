@@ -11,6 +11,20 @@ namespace Rc.Agent.Tests.Security;
 public sealed class PairingCoordinatorTests
 {
     [Fact]
+    public async Task LocallyArmedCodeIsUsedForTheCreatedInvitation()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        using var coordinator = new PairingCoordinator(store, new AgentCertificateManager(store));
+        var code = "ABCDEFGHJK";
+
+        var invitation = await coordinator.CreateInvitationAsync(LoopbackEndpoint, code);
+
+        Assert.Equal(code, invitation.OneTimeCode);
+    }
+
+    [Fact]
     public async Task SuccessfulPairingPinsControllerAndRejectsAnotherControllerUntilUnpaired()
     {
         using var directory = new TemporaryDirectory();

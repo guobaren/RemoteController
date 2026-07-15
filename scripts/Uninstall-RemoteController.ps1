@@ -1,6 +1,6 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
-    [string]$InstallPath = (Join-Path $env:ProgramFiles 'RemoteController'),
+    [string]$InstallPath = (Join-Path $(if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }) 'RemoteController'),
     [string]$DataRoot = (Join-Path $env:ProgramData 'RemoteController'),
     [switch]$KeepData
 )
@@ -9,10 +9,38 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $services = @('RemoteControllerAgent', 'RemoteControllerBroker')
 $firewallRule = 'RemoteController Agent TCP'
+$uiTaskName = 'RemoteControllerUiAgent'
+
+function Stop-UiAgent {
+    $task = Get-ScheduledTask -TaskName $uiTaskName -ErrorAction SilentlyContinue
+    if ($null -ne $task -and $task.State -eq 'Running') {
+        Stop-ScheduledTask -TaskName $uiTaskName
+    }
+
+    # The task can already be absent after a partial uninstall. In that case,
+    # or when Task Scheduler has not yet ended it, terminate only this product's
+    # UI Agent process so its executable is no longer locked for removal.
+    foreach ($process in @(Get-Process -Name 'Rc.UiAgent', 'Rc.UiTestApp' -ErrorAction SilentlyContinue)) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $processes = @(Get-Process -Name 'Rc.UiAgent', 'Rc.UiTestApp' -ErrorAction SilentlyContinue)
+        if ($processes.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw 'RemoteController UI processes did not stop within 30 seconds.'
+}
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $PSBoundParameters.ContainsKey('WhatIf') -and -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Uninstallation requires an elevated PowerShell session.' }
+
+if ($PSCmdlet.ShouldProcess($uiTaskName, 'Stop UI Agent before removal')) {
+    Stop-UiAgent
+}
 
 foreach ($name in $services) {
     $service = Get-Service -Name $name -ErrorAction SilentlyContinue
@@ -22,12 +50,16 @@ foreach ($name in $services) {
         if ($LASTEXITCODE -ne 0) { throw "Could not delete service $name" }
     }
 }
+if ($PSCmdlet.ShouldProcess($uiTaskName, 'Remove UI Agent logon task')) {
+    Unregister-ScheduledTask -TaskName $uiTaskName -Confirm:$false -ErrorAction SilentlyContinue
+}
 if ($PSCmdlet.ShouldProcess($firewallRule, 'Remove firewall rule')) {
     Get-NetFirewallRule -DisplayName $firewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 }
 if (Test-Path -LiteralPath $InstallPath -PathType Container) {
     $resolvedInstall = (Resolve-Path -LiteralPath $InstallPath).Path
-    $programFiles = [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\'
+    $programFilesRoot = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+    $programFiles = [IO.Path]::GetFullPath($programFilesRoot).TrimEnd('\') + '\'
     if (-not $resolvedInstall.StartsWith($programFiles, [StringComparison]::OrdinalIgnoreCase)) { throw "Refusing to remove install path outside Program Files: $resolvedInstall" }
     if ($PSCmdlet.ShouldProcess($resolvedInstall, 'Remove installed binaries')) { Remove-Item -LiteralPath $resolvedInstall -Recurse -Force }
 }

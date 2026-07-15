@@ -1,158 +1,158 @@
-# Windows Remote Controller Implementation Plan
+# Windows Remote Controller 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向代理工作者：** 必须使用子技能：`superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，按任务逐项实施本计划。各步骤使用复选框（`- [ ]`）语法跟踪。
 
-**Goal:** Build a Windows 10/11 LAN-only remote-controller CLI with durable interactive jobs, resumable files, explicit elevation, and optional GUI-session automation.
+**目标：** 构建仅适用于 Windows 10/11 局域网的远程控制 CLI，支持持久交互任务、可恢复文件传输、显式提权以及可选的 GUI 会话自动化。
 
-**Architecture:** A normal-user `rc-agent` service exposes mTLS gRPC to one paired controller and delegates each command to a durable `rc-taskhost`. A distinct privileged broker accepts only authenticated local IPC, and a per-login UI agent exposes desktop automation only while its selected user session exists.
+**架构：** 普通用户身份的 `rc-agent` 服务向一个已配对控制端提供 mTLS gRPC，并将每条命令委派给持久的 `rc-taskhost`。独立的特权 Broker 仅接受经验证的本地 IPC；每次用户登录时启动的 UI 代理仅在所选用户会话存在期间提供桌面自动化。
 
-**Tech Stack:** .NET 8/C#, gRPC over HTTP/2 and TLS 1.3, SQLite, Windows Service hosting, ConPTY/Win32 P/Invoke, named pipes, Windows UI Automation, xUnit, FluentAssertions, Microsoft.Extensions.Hosting.
+**技术栈：** .NET 8/C#、HTTP/2 与 TLS 1.3 上的 gRPC、SQLite、Windows 服务宿主、ConPTY/Win32 P/Invoke、命名管道、Windows UI Automation、xUnit、FluentAssertions、Microsoft.Extensions.Hosting。
 
 ---
 
-## Project layout
+## 项目布局
 
-- `src/Rc.Contracts/`: RPC schemas, JSON result envelope, error codes, command DTOs and config records.
-- `src/Rc.Agent/`: normal-user service, gRPC host, pairing, discovery, SQLite repositories, scheduler, transfer coordinator and local IPC client.
-- `src/Rc.TaskHost/`: one-job process host, ConPTY lifecycle, output segments and task control named pipe.
-- `src/Rc.PrivilegedBroker/`: high-privilege service with restricted named pipe and elevated task launches.
-- `src/Rc.UiAgent/`: per-user GUI automation agent and session registration client.
-- `src/Rc.Cli/`: `rcctl` System.CommandLine surface and JSON Lines renderer.
-- `tests/*`: unit, component and Windows-only integration tests mirroring each executable.
-- `installer/`: service/task registration and uninstall scripts.
+- `src/Rc.Contracts/`：RPC 架构、JSON 结果信封、错误代码、命令 DTO 和配置记录。
+- `src/Rc.Agent/`：普通用户服务、gRPC 宿主、配对、发现、SQLite 存储库、调度器、传输协调器和本地 IPC 客户端。
+- `src/Rc.TaskHost/`：单任务进程宿主、ConPTY 生命周期、输出分段和任务控制命名管道。
+- `src/Rc.PrivilegedBroker/`：具有受限命名管道的高权限服务，以及提权任务启动功能。
+- `src/Rc.UiAgent/`：按用户运行的 GUI 自动化代理和会话注册客户端。
+- `src/Rc.Cli/`：`rcctl` 的 System.CommandLine 接口与 JSON Lines 渲染器。
+- `tests/*`：与各可执行文件对应的单元、组件和 Windows 专用集成测试。
+- `installer/`：服务/任务注册与卸载脚本。
 
-### Task 1: Create the solution and public contracts
+### 任务 1：创建解决方案和公共契约
 
-**Files:**
-- Create: `RemoteController.sln`, `Directory.Build.props`, `src/Rc.Contracts/*`, `tests/Rc.Contracts.Tests/*`
+**文件：**
+- 创建：`RemoteController.sln`、`Directory.Build.props`、`src/Rc.Contracts/*`、`tests/Rc.Contracts.Tests/*`
 
-- [x] Create .NET 8 projects for every executable and current test assemblies; enable nullable reference types, implicit usings, deterministic builds and analyzers in `Directory.Build.props`. Broker/UI test assemblies remain part of Tasks 8-9.
-- [x] Define `ResultEnvelope<T>`, `RemoteError`, the fixed job state enum, `JobSnapshot`, byte-chunk DTOs, file-manifest DTOs, UI DTOs and the stable error-code enum in `Rc.Contracts`.
-- [ ] Define the remaining UI service surface. Pairing, jobs and files currently use versioned JSON-over-TLS control DTOs rather than the originally planned gRPC transport; raw command and byte payloads are preserved.
-- [x] Write contract serialization tests proving that success/error envelopes and Base64 byte chunks have stable camelCase JSON field names.
-- [x] Run `dotnet test tests/Rc.Contracts.Tests` and commit the contract foundation (`543bd11`, with follow-up hardening commits).
+- [x] 为每个可执行文件和当前测试程序集创建 .NET 8 项目；在 `Directory.Build.props` 中启用可空引用类型、隐式 using、确定性构建和分析器。Broker/UI 测试程序集仍属于任务 8-9。
+- [x] 在 `Rc.Contracts` 中定义 `ResultEnvelope<T>`、`RemoteError`、固定任务状态枚举、`JobSnapshot`、字节分块 DTO、文件清单 DTO、UI DTO 和稳定错误代码枚举。
+- [ ] 定义其余 UI 服务接口。配对、任务和文件目前使用带版本的 TLS 上 JSON 控制 DTO，而非最初计划的 gRPC 传输；原始命令和字节载荷已保留。
+- [x] 编写契约序列化测试，证明成功/错误信封和 Base64 字节分块具有稳定的 camelCase JSON 字段名。
+- [x] 运行 `dotnet test tests/Rc.Contracts.Tests`，并提交契约基础（`543bd11`，后续还有加固提交）。
 
-### Task 2: Add secure configuration, state storage and quota handling
+### 任务 2：添加安全配置、状态存储与配额处理
 
-**Files:**
-- Create: `src/Rc.Agent/Configuration/*`, `src/Rc.Agent/Persistence/*`, `tests/Rc.Agent.Tests/Persistence/*`
+**文件：**
+- 创建：`src/Rc.Agent/Configuration/*`、`src/Rc.Agent/Persistence/*`、`tests/Rc.Agent.Tests/Persistence/*`
 
-- [x] Add a strongly typed `AgentOptions` record with defaults: Windows 10/11 x64, normal-task limit 8, elevated-task limit 2, log quota 200 MB and cancellation grace 10 seconds; file root and transfer/write limits are environment-configurable.
-- [x] Build SQLite migrations for device identity, paired controller, job snapshots, output segments, transfer sessions and audit events. Store log data in segment files under the protected data root; SQLite stores paths and offsets.
-- [x] Store private keys and the configured execution-account secret with DPAPI; reject a data directory whose ACL permits untrusted users to write it.
-- [x] Write tests that migrate an empty database, persist/reload a job snapshot, and evict the oldest completed logs while retaining running-task tails under a test quota.
-- [x] Run persistence tests and commit `feat: add durable agent state and log quota` (`3b2c3ea`).
+- [x] 添加强类型 `AgentOptions` 记录，默认值为：Windows 10/11 x64、普通任务上限 8、提权任务上限 2、日志配额 200 MB、取消宽限期 10 秒；文件根目录及传输/写入限制均可通过环境变量配置。
+- [x] 为设备标识、已配对控制端、任务快照、输出分段、传输会话和审计事件构建 SQLite 迁移。日志数据保存在受保护数据根目录下的分段文件中；SQLite 保存路径和偏移量。
+- [x] 使用 DPAPI 存储私钥和配置的执行账户机密；若数据目录 ACL 允许不受信任用户写入则拒绝运行。
+- [x] 编写测试以迁移空数据库、持久化/重新加载任务快照，并在测试配额下淘汰最旧的已完成日志，同时保留运行中任务的尾部日志。
+- [x] 运行持久化测试，并提交 `feat: add durable agent state and log quota`（`3b2c3ea`）。
 
-### Task 3: Implement identity, one-controller pairing and mTLS
+### 任务 3：实现身份、单控制端配对和 mTLS
 
-**Files:**
-- Create: `src/Rc.Agent/Security/*`, `src/Rc.Cli/Commands/PairCommand.cs`, `tests/Rc.Agent.Tests/Security/*`
+**文件：**
+- 创建：`src/Rc.Agent/Security/*`、`src/Rc.Cli/Commands/PairCommand.cs`、`tests/Rc.Agent.Tests/Security/*`
 
-- [x] Generate an agent device key and self-signed TLS certificate on first start; expose only its SHA-256 fingerprint through discovery.
-- [ ] Implement the short-lived J-PAKE enrollment transcript and one-time-code flow. Agent/controller/endpoint/fingerprint binding and expiry are implemented; persistent audit/rate-limit completion remains pending.
-- [x] On success, store and pin the single controller certificate. Authenticated control calls use a TLS-pinned ECDSA challenge session, with legacy per-request signatures retained for compatibility.
-- [ ] `rcctl pair` and JSON output are implemented; the local-only `unpair` administrative command and active-session invalidation remain pending.
-- [ ] Pairing, fingerprint and second-controller tests exist; complete expired/wrong-code audit/rate-limit coverage and the user-facing unpair/re-pair test after adding the command.
-- [x] Run security tests and commit the one-controller pairing/TLS control plane (`0316064`, `adf22ac`).
+- [x] 首次启动时生成 Agent 设备密钥和自签名 TLS 证书；发现服务仅公开其 SHA-256 指纹。
+- [ ] 实现短期有效的 J-PAKE 注册记录和一次性代码流程。Agent/控制端/受管端/指纹绑定及过期处理已实现；持久审计/速率限制的完善仍待完成。
+- [x] 成功后保存并固定唯一的控制端证书。经身份验证的控制调用使用已固定 TLS 身份的 ECDSA 挑战会话；为兼容性保留旧版逐请求签名。
+- [ ] `rcctl pair` 和 JSON 输出已实现；仅本地可用的 `unpair` 管理命令及活动会话失效机制仍待完成。
+- [ ] 已有配对、指纹和第二控制端测试；添加命令后，补齐过期/错误代码的审计与速率限制覆盖，以及面向用户的取消配对/重新配对测试。
+- [x] 运行安全测试，并提交单控制端配对/TLS 控制平面（`0316064`、`adf22ac`）。
 
-### Task 4: Implement LAN discovery
+### 任务 4：实现局域网发现
 
-**Files:**
-- Create: `src/Rc.Agent/Discovery/*`, `src/Rc.Cli/Commands/DiscoverCommand.cs`, `tests/Rc.Agent.Tests/Discovery/*`
+**文件：**
+- 创建：`src/Rc.Agent/Discovery/*`、`src/Rc.Cli/Commands/DiscoverCommand.cs`、`tests/Rc.Agent.Tests/Discovery/*`
 
-- [x] Publish a versioned UDP multicast announcement containing only device ID, display name, TCP port, protocol version and certificate fingerprint.
-- [x] Implement `rcctl discover` with a bounded listen window, de-duplication by device ID and JSON rows sorted by display name.
-- [x] Reject oversized, malformed and unsupported-version announcements; never treat discovery data as authentication.
-- [x] Test payload redaction, round-trip decoding, duplicate suppression and the fallback manual pairing path.
-- [x] Run discovery tests and commit `feat: add lan device discovery` (`534bddf`).
+- [x] 发布带版本的 UDP 组播公告，仅包含设备 ID、显示名称、TCP 端口、协议版本和证书指纹。
+- [x] 实现 `rcctl discover`，具有有界监听窗口、按设备 ID 去重以及按显示名称排序的 JSON 行。
+- [x] 拒绝过大、格式错误和不支持版本的公告；绝不将发现数据当作身份验证。
+- [x] 测试载荷脱敏、往返解码、重复抑制及手动配对后备路径。
+- [x] 运行发现测试，并提交 `feat: add lan device discovery`（`534bddf`）。
 
-### Task 5: Build the independent task host and ConPTY output pipeline
+### 任务 5：构建独立任务宿主与 ConPTY 输出管线
 
-**Files:**
-- Create: `src/Rc.TaskHost/*`, `tests/Rc.TaskHost.Tests/*`
+**文件：**
+- 创建：`src/Rc.TaskHost/*`、`tests/Rc.TaskHost.Tests/*`
 
-- [x] Add a `TaskLaunchRequest` file contract passed from agent to task host, containing argv/shell mode, working directory, environment, execution identity and job ID.
-- [ ] Independent TaskHost processes, ordered stdout/stderr segment files and job-specific named-pipe control are implemented; true ConPTY/HPCON startup is still pending.
-- [x] Track PID, start/end timestamps, exit code, last-output timestamp and CPU/memory counters without a kill-on-close job object, so a restarting agent does not terminate the task host.
-- [ ] Cancellation and process-tree termination are implemented; true ConPTY Ctrl+C delivery followed by the configured grace period remains pending.
-- [ ] TaskHost tests cover command execution, stdin/EOF, output offsets, cancellation and failed starts; ConPTY-specific Ctrl+C behavior remains pending.
-- [x] Run `dotnet test tests/Rc.TaskHost.Tests` on Windows and commit `feat: add durable interactive task host` (`5539f6c`, `7090feb`).
+- [x] 添加从 Agent 传给 TaskHost 的 `TaskLaunchRequest` 文件契约，其中包含 argv/shell 模式、工作目录、环境、执行身份和任务 ID。
+- [ ] 独立 TaskHost 进程、有序 stdout/stderr 分段文件和按任务隔离的命名管道控制均已实现；真正的 ConPTY/HPCON 启动仍待完成。
+- [x] 跟踪 PID、开始/结束时间戳、退出码、最后输出时间戳和 CPU/内存计数器；不使用 kill-on-close 作业对象，以便 Agent 重启不会终止 TaskHost。
+- [ ] 取消和进程树终止已实现；真正的 ConPTY Ctrl+C 发送及随后按配置宽限期等待仍待完成。
+- [ ] TaskHost 测试覆盖命令执行、stdin/EOF、输出偏移、取消和启动失败；ConPTY 专用的 Ctrl+C 行为仍待完成。
+- [x] 在 Windows 上运行 `dotnet test tests/Rc.TaskHost.Tests`，并提交 `feat: add durable interactive task host`（`5539f6c`、`7090feb`）。
 
-### Task 6: Add scheduling, recovery and job RPCs
+### 任务 6：添加调度、恢复和任务 RPC
 
-**Files:**
-- Create: `src/Rc.Agent/Jobs/*`, `src/Rc.Agent/Grpc/JobsService.cs`, `tests/Rc.Agent.Tests/Jobs/*`
+**文件：**
+- 创建：`src/Rc.Agent/Jobs/*`、`src/Rc.Agent/Grpc/JobsService.cs`、`tests/Rc.Agent.Tests/Jobs/*`
 
-- [ ] Normal-job bounded scheduling and queued snapshots are implemented. The separate elevated queue/limit remains pending with the Broker.
-- [x] On Agent start, locate live TaskHosts through registered local pipes, reconnect and repair snapshots; mark unrecoverable running/queued jobs `interrupted_by_reboot` without relaunching.
-- [x] Implement versioned JSON-over-TLS `Exec`, `ListJobs`, `GetJob`, `ReadLogs(afterOffset)`, follow/retry, `WriteStdin`, `CloseStdin`, `WaitJob` and `CancelJob` control operations.
-- [ ] Lifecycle transitions are persisted before reporting; complete durable audit-event emission and audit verification.
-- [ ] Tests cover normal queueing, reconnect/recovery, reboot interruption and cancellation. Elevated concurrency and full duplicate-cancellation/audit coverage remain pending.
-- [x] Job and session tests pass; expanded scheduler/session work committed in `6be9ca6`.
+- [ ] 普通任务的有界调度和排队快照已实现。独立的提权队列/限制仍与 Broker 一同待完成。
+- [x] Agent 启动时，通过已注册的本地管道查找存活 TaskHost、重新连接并修复快照；将无法恢复的运行中/排队任务标记为 `interrupted_by_reboot`，而不重新启动。
+- [x] 实现 TLS 上带版本 JSON 的 `Exec`、`ListJobs`、`GetJob`、`ReadLogs(afterOffset)`、follow/retry、`WriteStdin`、`CloseStdin`、`WaitJob` 和 `CancelJob` 控制操作。
+- [ ] 状态流转会在报告前持久化；完成持久审计事件写入和审计校验。
+- [ ] 测试覆盖普通排队、重新连接/恢复、重启中断和取消。提权并发及完整的重复取消/审计覆盖仍待完成。
+- [x] 任务和会话测试通过；扩展调度器/会话工作已提交于 `6be9ca6`。
 
-### Task 7: Implement resumable file and directory transfer
+### 任务 7：实现可恢复文件与目录传输
 
-**Files:**
-- Create: `src/Rc.Agent/Files/*`, `src/Rc.Agent/Grpc/FilesService.cs`, `tests/Rc.Agent.Tests/Files/*`
+**文件：**
+- 创建：`src/Rc.Agent/Files/*`、`src/Rc.Agent/Grpc/FilesService.cs`、`tests/Rc.Agent.Tests/Files/*`
 
-- [x] Implement safe path resolution for the configured file root; reject device names, traversal outside the root and access through reparse points.
-- [x] Implement `fs list`, `stat`, byte-range `read`, and temporary-file/atomic-replace `write`, with a configurable atomic-write limit.
-- [x] Implement persisted transfer sessions with fixed-size chunks, per-chunk SHA-256 receipts, full-file SHA-256 verification, resumable offsets, cleanup expiry and configurable transfer/chunk limits.
-- [x] Recursively expand directory manifests using normalized relative paths; preserve content, files and empty-directory structure only, not ACLs or ownership.
-- [x] Test interrupted upload persistence/resume, download range resume behavior, altered chunk and persisted-part rejection, final hash verification, atomic-write safety/limits, empty directories, expiry and traversal rejection; add an authenticated TLS file-control integration test.
-- [x] File and full-solution tests pass locally (177 total on 2026-07-12); the project-local temporary SDK was removed after verification, and the implementation was committed in `6be9ca6`.
+- [x] 为配置的文件根目录实现安全路径解析；拒绝设备名、根目录外的路径遍历及经由重解析点的访问。
+- [x] 实现 `fs list`、`stat`、字节范围 `read` 和临时文件/原子替换 `write`，并提供可配置的原子写入上限。
+- [x] 实现持久传输会话，包含固定大小分块、每块 SHA-256 回执、完整文件 SHA-256 校验、可恢复偏移、清理过期和可配置的传输/分块限制。
+- [x] 使用规范化相对路径递归展开目录清单；仅保留内容、文件和空目录结构，不保留 ACL 或所有权。
+- [x] 测试中断上传的持久化/恢复、下载范围恢复行为、篡改分块和已持久化分块的拒绝、最终哈希校验、原子写入安全/限制、空目录、过期和路径遍历拒绝；添加经身份验证的 TLS 文件控制集成测试。
+- [x] 文件和完整解决方案测试在本地通过（2026-07-12 共 177 项）；验证后移除了项目内临时 SDK，实施内容已提交于 `6be9ca6`。
 
-### Task 8: Add the explicit elevated execution broker
+### 任务 8：添加显式提权执行 Broker
 
-**Files:**
-- Create: `src/Rc.PrivilegedBroker/*`, `src/Rc.Agent/Elevation/*`, `tests/Rc.PrivilegedBroker.Tests/*`
+**文件：**
+- 创建：`src/Rc.PrivilegedBroker/*`、`src/Rc.Agent/Elevation/*`、`tests/Rc.PrivilegedBroker.Tests/*`
 
-- [ ] Register the broker as a distinct privileged Windows service. Its named pipe ACL must allow only the configured agent service identity; validate a per-installation request MAC in addition to the pipe ACL.
-- [ ] Accept only a signed task launch/cancel/status message and return a broker task-host registration; never expose a TCP listener from the privileged broker.
-- [ ] Route `exec --elevated` through the broker and all other commands through the normal scheduler. Record the selected identity in job metadata and audit events.
-- [ ] Test that a non-agent local process cannot connect, an invalid MAC is rejected, ordinary execution never invokes the broker, and elevated invocation returns a visible elevated identity.
-- [ ] Run broker tests under an administrative Windows test environment and commit `feat: add explicit elevated task broker`.
+- [ ] 将 Broker 注册为独立的特权 Windows 服务。其命名管道 ACL 必须只允许配置的 Agent 服务标识；除管道 ACL 外，还要校验每次安装生成的请求 MAC。
+- [ ] 仅接受已签名的任务启动/取消/状态消息，并返回 Broker 任务宿主注册；绝不从特权 Broker 暴露 TCP 监听器。
+- [ ] 将 `exec --elevated` 通过 Broker 路由，其他所有命令均走普通调度器。在任务元数据和审计事件中记录所选身份。
+- [ ] 测试非 Agent 本地进程无法连接、无效 MAC 被拒绝、普通执行绝不调用 Broker，以及提权调用返回可见的提权身份。
+- [ ] 在管理员 Windows 测试环境中运行 Broker 测试，并提交 `feat: add explicit elevated task broker`。
 
-### Task 9: Implement the GUI session agent
+### 任务 9：实现 GUI 会话代理
 
-**Files:**
-- Create: `src/Rc.UiAgent/*`, `src/Rc.Agent/Ui/*`, `tests/Rc.UiAgent.Tests/*`
+**文件：**
+- 创建：`src/Rc.UiAgent/*`、`src/Rc.Agent/Ui/*`、`tests/Rc.UiAgent.Tests/*`
 
-- [ ] Install a per-user logon task for the chosen interactive account. The UI agent registers session ID, displays and capability version with `rc-agent` through a local named pipe.
-- [ ] Implement multi-display and window enumeration, target-window/display screenshots, UI Automation snapshots, activate/minimize/maximize/restore/move/close, mouse, keyboard, text, shortcuts and clipboard operations.
-- [ ] Require a valid active session and explicit display/window target for screenshot and input; map closed windows, detached displays and no-session conditions to documented error codes.
-- [ ] Use Windows-MCP as a behavioral reference for UI Automation coverage, but retain all implementation in .NET and disable any telemetry.
-- [ ] Test serialization and target validation in unit tests; add Windows integration tests that automate a disposable test window on two virtual/physical displays when available.
-- [ ] Run UI tests and commit `feat: add optional interactive gui session agent`.
+- [ ] 为选定交互式账户安装按用户运行的登录任务。UI 代理通过本地命名管道向 `rc-agent` 注册会话 ID、显示器和能力版本。
+- [ ] 实现多显示器和窗口枚举、针对窗口/显示器的截图、UI Automation 快照、激活/最小化/最大化/还原/移动/关闭、鼠标、键盘、文本、快捷键和剪贴板操作。
+- [ ] 对截图和输入要求有效活动会话及显式显示器/窗口目标；将窗口关闭、显示器断开和无会话情况映射到已文档化的错误代码。
+- [ ] 以 Windows-MCP 作为 UI Automation 覆盖范围的行为参考，但保留全部 .NET 实现并禁用所有遥测。
+- [ ] 在单元测试中测试序列化和目标校验；可用时添加 Windows 集成测试，在两个虚拟/物理显示器上自动操作一次性测试窗口。
+- [ ] 运行 UI 测试，并提交 `feat: add optional interactive gui session agent`。
 
-### Task 10: Build the JSON-first CLI and installation workflow
+### 任务 10：构建 JSON 优先 CLI 与安装流程
 
-**Files:**
-- Create: `src/Rc.Cli/*`, `installer/Install.ps1`, `installer/Uninstall.ps1`, `tests/Rc.Cli.Tests/*`
+**文件：**
+- 创建：`src/Rc.Cli/*`、`installer/Install.ps1`、`installer/Uninstall.ps1`、`tests/Rc.Cli.Tests/*`
 
-- [ ] Implement all approved command groups: discover/pair, exec, job, fs/copy and ui. Route direct argv and explicit shell calls to distinct request DTOs.
-- [ ] Make every successful command emit one JSON Line with `ok: true`; make every failure emit `ok: false` with a stable error code and set a nonzero process exit code. Add `--text` renderers without changing DTOs.
-- [ ] Render `job logs --follow --text` as a local terminal stream; JSON mode must return raw Base64 chunks, stream name and next byte offset.
-- [ ] Install normal agent and privileged broker services, create the selected-user UI logon task, configure firewall rules for the explicit LAN port, and provide idempotent uninstall/repair paths.
-- [ ] Test CLI argument parsing, envelope shape, agent-unavailable error, stable exit codes and installation-script dry-run/what-if behavior.
-- [ ] Publish self-contained single-file x64 executables and commit `feat: ship json cli and windows installer`.
+- [ ] 实现所有已批准命令组：discover/pair、exec、job、fs/copy 和 ui。将直接 argv 与显式 shell 调用路由到不同的请求 DTO。
+- [ ] 每条成功命令均输出一行 `ok: true` 的 JSON；每条失败命令均输出带稳定错误代码的 `ok: false` 并设置非零进程退出码。添加 `--text` 渲染器，但不改变 DTO。
+- [ ] 将 `job logs --follow --text` 渲染为本地终端流；JSON 模式必须返回原始 Base64 分块、流名称和下一个字节偏移。
+- [ ] 安装普通 Agent 和特权 Broker 服务，创建所选用户的 UI 登录任务，为显式局域网端口配置防火墙规则，并提供幂等的卸载/修复路径。
+- [ ] 测试 CLI 参数解析、信封形状、Agent 不可用错误、稳定退出码和安装脚本的 dry-run/what-if 行为。
+- [ ] 发布自包含单文件 x64 可执行文件，并提交 `feat: ship json cli and windows installer`。
 
-### Task 11: Document, validate and package the first release
+### 任务 11：记录、验证并打包首个版本
 
-**Files:**
-- Create: `README.md`, `docs/security.md`, `docs/protocol.md`, `docs/operations.md`, `.github/workflows/ci.yml`
+**文件：**
+- 创建：`README.md`、`docs/security.md`、`docs/protocol.md`、`docs/operations.md`、`.github/workflows/ci.yml`
 
-- [ ] Document first installation, normal-account configuration, discovery pairing, manual `IP:port + code` pairing, unpairing, logs quota, elevation, transfer resume and GUI-session limitations.
-- [ ] Document threat boundaries: trusted single controller, LAN discovery is unauthenticated, PAKE/mTLS protects control traffic, UAC desktop is unsupported, and reboot does not resume arbitrary jobs.
-- [ ] Add CI for restore, build, unit tests, contract tests and Windows integration-test gating; fail release packaging unless every self-contained binary is present.
-- [ ] Run an end-to-end two-VM acceptance scenario: pair, start two concurrent Python/pip commands, stream output, write stdin, reconnect, transfer/resume a directory, run an elevated command, login and control a test GUI window, then verify audit/log quota behavior.
-- [ ] Commit `docs: document remote controller setup and operation` and tag the first tested Windows x64 release.
+- [ ] 记录首次安装、普通账户配置、发现配对、手动 `IP:port + code` 配对、取消配对、日志配额、提权、传输恢复和 GUI 会话限制。
+- [ ] 记录威胁边界：受信任的单一控制端、局域网发现未经身份验证、PAKE/mTLS 保护控制流量、不支持 UAC 桌面，以及重启不会恢复任意任务。
+- [ ] 添加用于还原、构建、单元测试、契约测试和 Windows 集成测试门控的 CI；如果缺少任何自包含二进制文件，则发布打包必须失败。
+- [ ] 运行双 VM 端到端验收场景：配对、启动两个并发 Python/pip 命令、流式输出、写入 stdin、重新连接、传输/恢复目录、运行提权命令、登录并控制测试 GUI 窗口，最后验证审计/日志配额行为。
+- [ ] 提交 `docs: document remote controller setup and operation`，并为第一个经过测试的 Windows x64 版本打标签。
 
-## Final acceptance checks
+## 最终验收检查
 
-- [ ] An AI agent can parse every CLI result without screen scraping.
-- [ ] A paired controller can disconnect/reconnect without killing a running job and can resume output from a byte offset.
-- [ ] A reboot never silently replays a command.
-- [ ] An unpaired LAN host cannot call control RPCs or attach to privileged/UI local IPC.
-- [ ] A file/directory transfer resumes after interruption and rejects altered content.
-- [ ] GUI operations only work in the configured logged-in user session and correctly report unavailability otherwise.
+- [ ] AI agent 可以解析每一条 CLI 结果，无需屏幕抓取。
+- [ ] 已配对控制端可以断开/重新连接而不杀死运行中的任务，并能从字节偏移处恢复输出。
+- [ ] 重启绝不会悄然重放命令。
+- [ ] 未配对的局域网主机不能调用控制 RPC，也不能连接特权/UI 本地 IPC。
+- [ ] 文件/目录传输可在中断后恢复，并拒绝被篡改的内容。
+- [ ] GUI 操作仅在配置的已登录用户会话中工作；不可用时能正确报告状态。

@@ -68,6 +68,7 @@ public static class FileCommand
             else throw new ArgumentException(UsageCopy());
 
             await error.WriteLineAsync($"[rcctl] transferSession={session.SessionId}");
+            await error.FlushAsync();
             if (operation == "upload") await UploadAsync(connection, session, path!);
             else await DownloadAsync(connection, session, destination);
             var completed = await connection.SendAsync<TransferCompleteResponse>(new ControlTransferCompleteRequest(1, connection.ControllerId, new TransferCompleteRequest(session.SessionId)));

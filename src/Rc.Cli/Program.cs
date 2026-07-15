@@ -1,25 +1,91 @@
 using Rc.Cli.Commands;
+using System.Text.Json;
+using Rc.Contracts;
 
-if (args.Length == 0)
+var textMode = args.Contains("--text", StringComparer.Ordinal);
+using var capturedOutput = textMode ? null : new StringWriter();
+using var capturedError = textMode ? null : new StringWriter();
+var output = textMode ? Console.Out : capturedOutput!;
+var error = textMode ? Console.Error : capturedError!;
+var exitCode = args.Length == 0
+    ? await WriteUsageAndReturnAsync(error)
+    : await DispatchAsync(args, output, error);
+
+if (!textMode)
 {
-    Console.Error.WriteLine("Usage: rcctl discover [--timeout-ms <1-60000>] [--text] | rcctl probe <IP:port> --fingerprint <SHA256> [--text] | rcctl pair <IP:port> --fingerprint <SHA256> [--name <controller-name>] [--text] | rcctl exec <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--text] | rcctl job start|status|list|logs|input|close-input|cancel|wait ... | rcctl fs ... | rcctl copy ...");
-    return 2;
+    if (exitCode == 0 || IsSuccessEnvelope(capturedOutput!.ToString()))
+    {
+        await Console.Out.WriteAsync(capturedOutput!.ToString());
+    }
+    else
+    {
+        var remoteError = TryGetFailure(capturedOutput!.ToString()) ?? CreateFailure(exitCode, capturedError!.ToString());
+        await Console.Out.WriteLineAsync(JsonSerializer.Serialize(Result.Failure<object>(remoteError), ContractJson.Options));
+    }
 }
 
-return args[0] switch
+return exitCode;
+
+static Task<int> DispatchAsync(string[] arguments, TextWriter output, TextWriter error) => arguments[0] switch
 {
-    "discover" => await DiscoverCommand.RunAsync(args[1..], Console.Out, Console.Error),
-    "probe" => await ProbeCommand.RunAsync(args[1..], Console.Out, Console.Error),
-    "pair" => await PairCommand.RunAsync(args[1..], Console.In, Console.Out, Console.Error),
-    "exec" => await ExecCommand.RunAsync(args[1..], Console.Out, Console.Error),
-    "job" => await JobCommand.RunAsync(args[1..], Console.Out, Console.Error),
-    "fs" => await FileCommand.RunFsAsync(args[1..], Console.Out, Console.Error),
-    "copy" => await FileCommand.RunCopyAsync(args[1..], Console.Out, Console.Error),
-    _ => await WriteUsageAndReturnAsync(args[0]),
+    "discover" => DiscoverCommand.RunAsync(arguments[1..], output, error),
+    "probe" => ProbeCommand.RunAsync(arguments[1..], output, error),
+    "pair" => PairCommand.RunAsync(arguments[1..], Console.In, output, error),
+    "exec" => ExecCommand.RunAsync(arguments[1..], output, error),
+    "job" => JobCommand.RunAsync(arguments[1..], output, error),
+    "fs" => FileCommand.RunFsAsync(arguments[1..], output, error),
+    "copy" => FileCommand.RunCopyAsync(arguments[1..], output, error),
+    "ui" => UiCommand.RunAsync(arguments[1..], output, error),
+    _ => WriteUsageAndReturnAsync(error, arguments[0]),
 };
 
-static Task<int> WriteUsageAndReturnAsync(string command)
+static Task<int> WriteUsageAndReturnAsync(TextWriter error, string? command = null)
 {
-    Console.Error.WriteLine($"Unknown command: {command}. Usage: rcctl discover [--timeout-ms <1-60000>] [--text] | rcctl probe <IP:port> --fingerprint <SHA256> [--text] | rcctl pair <IP:port> --fingerprint <SHA256> [--name <controller-name>] [--text] | rcctl exec <IP:port> --fingerprint <SHA256> --command <command> [--shell powershell|cmd] [--workdir <path>] [--text] | rcctl job start|status|list|logs|input|close-input|cancel|wait ... | rcctl fs ... | rcctl copy ...");
+    var prefix = command is null ? string.Empty : $"Unknown command: {command}. ";
+    error.WriteLine($"{prefix}Usage: rcctl discover ... | rcctl probe ... | rcctl pair ... | rcctl exec ... | rcctl job ... | rcctl fs ... | rcctl copy ... | rcctl ui ...");
     return Task.FromResult(2);
+}
+
+static ErrorCode GetErrorCode(int exitCode, string message)
+{
+    if (exitCode == 2) return ErrorCode.InvalidRequest;
+    if (exitCode == 130) return ErrorCode.Cancelled;
+    if (message.Contains("TLS authentication", StringComparison.OrdinalIgnoreCase)) return ErrorCode.Unauthenticated;
+    if (message.Contains("rejected", StringComparison.OrdinalIgnoreCase)) return ErrorCode.FailedPrecondition;
+    return ErrorCode.Unavailable;
+}
+
+static RemoteError CreateFailure(int exitCode, string capturedMessage)
+{
+    var message = capturedMessage.Trim();
+    return new RemoteError(
+        GetErrorCode(exitCode, message),
+        string.IsNullOrEmpty(message) ? "The command failed without additional details." : message,
+        exitCode is 1 or 130);
+}
+
+static RemoteError? TryGetFailure(string output)
+{
+    try
+    {
+        var envelope = JsonSerializer.Deserialize<ResultEnvelope<JsonElement>>(output.Trim(), ContractJson.Options);
+        return envelope is { Ok: false, Error: not null } ? envelope.Error : null;
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+}
+
+static bool IsSuccessEnvelope(string output)
+{
+    try
+    {
+        var envelope = JsonSerializer.Deserialize<ResultEnvelope<JsonElement>>(output.Trim(), ContractJson.Options);
+        return envelope is { Ok: true };
+    }
+    catch (JsonException)
+    {
+        return false;
+    }
 }

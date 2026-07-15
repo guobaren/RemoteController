@@ -16,7 +16,7 @@ public static class PairCommand
 
     public static async Task<int> RunAsync(string[] args, TextReader input, TextWriter output, TextWriter error)
     {
-        if (!TryParseArguments(args, out var endpoint, out var fingerprint, out var requestedName, out var text, out var argumentError))
+        if (!TryParseArguments(args, out var endpoint, out var fingerprint, out var requestedName, out var oneTimeCodeArgument, out var text, out var argumentError))
         {
             await error.WriteLineAsync(argumentError);
             return 2;
@@ -28,8 +28,26 @@ public static class PairCommand
             var start = await SendAsync<ControlPairStartResponse>(
                 endpoint!, fingerprint!, new ControlPairStartRequest(1, identity.ControllerId, identity.Certificate));
 
-            await output.WriteLineAsync($"Enter the one-time code currently displayed by agent {start.Binding.AgentDeviceId}:");
-            var oneTimeCode = await input.ReadLineAsync();
+            var oneTimeCode = oneTimeCodeArgument;
+            if (oneTimeCode is null)
+            {
+                await output.WriteLineAsync($"Enter the one-time code currently displayed by agent {start.Binding.AgentDeviceId}:");
+                try
+                {
+                    oneTimeCode = await input.ReadLineAsync();
+                }
+                catch (IOException exception)
+                {
+                    await error.WriteLineAsync($"Pairing cancelled: console input is no longer available ({exception.Message}).");
+                    return 130;
+                }
+                catch (ObjectDisposedException exception)
+                {
+                    await error.WriteLineAsync($"Pairing cancelled: console input is no longer available ({exception.Message}).");
+                    return 130;
+                }
+            }
+
             if (string.IsNullOrWhiteSpace(oneTimeCode))
             {
                 await error.WriteLineAsync("Pairing cancelled: no one-time code was provided.");
@@ -112,6 +130,11 @@ public static class PairCommand
             await error.WriteLineAsync($"Unable to connect: {exception.Message}");
             return 1;
         }
+        catch (IOException exception)
+        {
+            await error.WriteLineAsync($"Unable to communicate with the agent: {exception.Message}");
+            return 1;
+        }
         catch (CryptographicException exception)
         {
             await error.WriteLineAsync($"Pairing failed: {exception.Message}");
@@ -165,17 +188,19 @@ public static class PairCommand
         out IPEndPoint? endpoint,
         out string? fingerprint,
         out string? name,
+        out string? oneTimeCode,
         out bool text,
         out string? error)
     {
         endpoint = null;
         fingerprint = null;
         name = Environment.MachineName;
+        oneTimeCode = null;
         text = false;
         error = null;
         if (args.Length == 0 || !IPEndPoint.TryParse(args[0], out endpoint))
         {
-            error = "Usage: rcctl pair <IP:port> --fingerprint <SHA256> [--name <controller-name>] [--text]";
+            error = "Usage: rcctl pair <IP:port> --fingerprint <SHA256> [--name <controller-name>] [--code <one-time-code>] [--text]";
             return false;
         }
 
@@ -189,11 +214,14 @@ public static class PairCommand
                 case "--name" when index + 1 < args.Length:
                     name = args[++index];
                     break;
+                case "--code" when index + 1 < args.Length:
+                    oneTimeCode = args[++index].Trim();
+                    break;
                 case "--text":
                     text = true;
                     break;
                 default:
-                    error = "Usage: rcctl pair <IP:port> --fingerprint <SHA256> [--name <controller-name>] [--text]";
+                    error = "Usage: rcctl pair <IP:port> --fingerprint <SHA256> [--name <controller-name>] [--code <one-time-code>] [--text]";
                     return false;
             }
         }
@@ -207,6 +235,12 @@ public static class PairCommand
         if (string.IsNullOrWhiteSpace(name) || name.Length > 128 || name.Any(char.IsControl))
         {
             error = "The controller name must be 1 to 128 non-control characters.";
+            return false;
+        }
+
+        if (oneTimeCode is not null && string.IsNullOrWhiteSpace(oneTimeCode))
+        {
+            error = "The one-time pairing code cannot be empty.";
             return false;
         }
 
