@@ -13,6 +13,14 @@
 
 当需要保留配对状态、日志和传输快照以便诊断时，请在卸载时使用 `-KeepData`。
 
+## 一键更新
+
+发布目录包含 `Update-RemoteController.ps1`。控制端通过 `rcctl update apply <IP:port> --fingerprint <SHA256> --package <publish-directory>` 创建文件清单、上传分块并触发更新；`--wait` 会在 Agent 重启期间重连并等待最终状态。
+
+受管端只接受已配对控制端的更新请求，并同时校验每个分块和完整文件的 SHA-256。更新器会先停止受管端服务和 UI 任务，保留当前安装目录作为回滚副本，再调用安装器恢复 Agent、Broker 和 UiAgent。更新失败时会还原旧目录并尝试重启旧服务；`ProgramData` 数据根不会被替换。
+
+使用 `rcctl update status <IP:port> --fingerprint <SHA256> --update <GUID>` 查询已提交更新的状态、安装任务 ID 与失败原因。
+
 ## 任务与传输
 
 持久任务可使用 `rcctl job start`、`status`、`list`、`logs`、`input`、`close-input`、`wait` 和 `cancel`。断开连接不会终止正在运行的 TaskHost；使用日志偏移量或 `--follow` 可恢复读取。重启会将保留下来的快照标记为已中断，且绝不会重新运行命令。

@@ -13,6 +13,7 @@ using Rc.Agent.Elevation;
 using Rc.Agent.Persistence;
 using Rc.Agent.Security;
 using Rc.Agent.Ui;
+using Rc.Agent.Updates;
 using Rc.Contracts;
 using Rc.TaskHost;
 
@@ -37,7 +38,9 @@ public sealed class TlsControlListener : IAsyncDisposable
     private readonly FileTransferService fileService;
     private readonly AgentOptions options;
     private readonly UiSessionRegistry? uiSessionRegistry;
+    private readonly UpdateService updateService;
     private readonly string dataRoot;
+    private readonly int tcpPort;
     private bool started;
 
     public TlsControlListener(
@@ -62,6 +65,7 @@ public sealed class TlsControlListener : IAsyncDisposable
         this.pairingCoordinator = pairingCoordinator;
         this.options = options ?? new AgentOptions();
         this.uiSessionRegistry = uiSessionRegistry;
+        tcpPort = port;
         var brokerSecretPath = this.options.BrokerSecretPath ?? Path.Combine(stateStore.DataRoot, "broker-auth.key");
         taskRegistry = new ManagedTaskRegistry(
             stateStore,
@@ -72,6 +76,8 @@ public sealed class TlsControlListener : IAsyncDisposable
             new PrivilegedBrokerTaskHostLauncher(this.options.BrokerPipeName, brokerSecretPath),
             this.options.TaskOutputLimitBytes);
         fileService = new FileTransferService(stateStore, this.options);
+        updateService = new UpdateService(stateStore, this.options,
+            new TaskRegistryUpdateApplier(taskRegistry, stateStore.DataRoot, AppContext.BaseDirectory, tcpPort));
         listener = new TcpListener(IPAddress.Any, port);
     }
 
@@ -236,6 +242,18 @@ public sealed class TlsControlListener : IAsyncDisposable
                         case ControlMessageKinds.UiCommand:
                             await HandleUiCommandAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
                             break;
+                        case ControlMessageKinds.UpdateStart:
+                            await HandleUpdateStartAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
+                            break;
+                        case ControlMessageKinds.UpdateWriteChunk:
+                            await HandleUpdateWriteChunkAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
+                            break;
+                        case ControlMessageKinds.UpdateComplete:
+                            await HandleUpdateCompleteAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
+                            break;
+                        case ControlMessageKinds.UpdateStatus:
+                            await HandleUpdateStatusAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
+                            break;
                         default:
                             await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The control request kind is not supported.");
                             break;
@@ -318,6 +336,98 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
 
         await ExecuteUiOperationAsync(registration, request.Operation, request.Request, writer, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task HandleUpdateStartAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlUpdateStartRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || request.Request is null)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The update start request is invalid.");
+            return;
+        }
+        await ExecuteUpdateAsync("update.started", request.ControllerId, request.Request.UpdateId, request.Signature,
+            key => ControlRequestAuthentication.VerifyUpdateStart(identity.DeviceId, request.ControllerId, request.Request, request.Signature, key),
+            () => updateService.StartAsync(request.Request, cancellationToken), session, writer, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task HandleUpdateWriteChunkAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlUpdateWriteChunkRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || request.Request is null)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The update chunk request is invalid.");
+            return;
+        }
+        await ExecuteUpdateAsync("update.chunk_written", request.ControllerId, request.Request.UpdateId, request.Signature,
+            key => ControlRequestAuthentication.VerifyUpdateWriteChunk(identity.DeviceId, request.ControllerId, request.Request, request.Signature, key),
+            () => updateService.WriteChunkAsync(request.Request, cancellationToken), session, writer, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task HandleUpdateCompleteAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlUpdateCompleteRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || request.Request is null)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The update completion request is invalid.");
+            return;
+        }
+        await ExecuteUpdateAsync("update.applying", request.ControllerId, request.Request.UpdateId, request.Signature,
+            key => ControlRequestAuthentication.VerifyUpdateComplete(identity.DeviceId, request.ControllerId, request.Request, request.Signature, key),
+            () => updateService.CompleteAsync(request.Request, cancellationToken), session, writer, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task HandleUpdateStatusAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlUpdateStatusRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || request.Request is null)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The update status request is invalid.");
+            return;
+        }
+        await ExecuteUpdateAsync("update.status_read", request.ControllerId, request.Request.UpdateId, request.Signature,
+            key => ControlRequestAuthentication.VerifyUpdateStatus(identity.DeviceId, request.ControllerId, request.Request, request.Signature, key),
+            () => updateService.GetStatusAsync(request.Request, cancellationToken), session, writer, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ExecuteUpdateAsync(
+        string eventType,
+        string controllerId,
+        Guid updateId,
+        byte[] signature,
+        Func<ECDsa, bool> verifySignature,
+        Func<ValueTask<UpdateStatusResponse>> operation,
+        AuthenticatedControlSession? session,
+        StreamWriter writer,
+        CancellationToken cancellationToken)
+    {
+        if (!await VerifyPairedControllerRequestAsync(session, controllerId, signature, verifySignature, writer, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+        try
+        {
+            var result = await operation().ConfigureAwait(false);
+            var succeeded = result.State != UpdateState.Failed;
+            await AuditAsync(eventType, controllerId, updateId.ToString("N"), succeeded, succeeded ? null : ErrorCode.FailedPrecondition,
+                new Dictionary<string, string> { ["state"] = result.State.ToString(), ["version"] = result.Version }, cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, result).ConfigureAwait(false);
+        }
+        catch (KeyNotFoundException exception)
+        {
+            await AuditAsync(eventType, controllerId, updateId.ToString("N"), false, ErrorCode.NotFound, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.NotFound, exception.Message).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException exception)
+        {
+            await AuditAsync(eventType, controllerId, updateId.ToString("N"), false, ErrorCode.FailedPrecondition, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, exception.Message).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidDataException or IOException)
+        {
+            await AuditAsync(eventType, controllerId, updateId.ToString("N"), false, ErrorCode.InvalidRequest, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, exception.Message).ConfigureAwait(false);
+        }
     }
 
     private static async Task ExecuteUiOperationAsync(UiAgentRegistration registration, string operation, JsonElement request, StreamWriter writer, CancellationToken cancellationToken, bool projectSnapshotAsStatus = false)
@@ -1173,5 +1283,6 @@ public sealed class TlsControlListener : IAsyncDisposable
         shutdown.Dispose();
         executeOnceGate.Dispose();
         fileService.Dispose();
+        updateService.Dispose();
     }
 }

@@ -4,7 +4,7 @@ param(
     [string]$InstallPath = (Join-Path $(if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }) 'RemoteController'),
     [string]$DataRoot = (Join-Path $env:ProgramData 'RemoteController'),
     [ValidateRange(1, 65535)][int]$TcpPort = 43001,
-    [string]$UiUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
+    [string]$UiUser,
     [switch]$NoFirewallRule
 )
 
@@ -30,6 +30,15 @@ $taskHostExe = Join-Path $InstallPath 'Rc.TaskHost.exe'
 $uiAgentExe = Join-Path $InstallPath 'Rc.UiAgent.exe'
 $secretPath = Join-Path $DataRoot 'broker-auth.key'
 $uiTaskName = 'RemoteControllerUiAgent'
+
+if ([string]::IsNullOrWhiteSpace($UiUser)) {
+    $existingTask = Get-ScheduledTask -TaskName $uiTaskName -ErrorAction SilentlyContinue
+    $UiUser = if ($null -ne $existingTask -and -not [string]::IsNullOrWhiteSpace($existingTask.Principal.UserId)) {
+        $existingTask.Principal.UserId
+    } else {
+        [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    }
+}
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

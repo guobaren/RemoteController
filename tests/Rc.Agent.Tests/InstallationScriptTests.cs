@@ -29,6 +29,23 @@ public sealed class InstallationScriptTests
         Assert.False(Directory.Exists(data));
     }
 
+    [Fact]
+    public async Task UpdateWhatIfDoesNotMutateTheMachineOrTemporaryPaths()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = Path.Combine(directory.Path, "publish");
+        var install = Path.Combine(directory.Path, "install");
+        var data = Path.Combine(directory.Path, "data");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(Path.Combine(source, "Install-RemoteController.ps1"), "param()");
+
+        await RunPowerShellAsync(Path.Combine(FindRepositoryRoot(), "scripts", "Update-RemoteController.ps1"),
+            "-SourcePath", source, "-InstallPath", install, "-DataRoot", data, "-NoFirewallRule", "-WhatIf");
+
+        Assert.False(Directory.Exists(install));
+        Assert.False(Directory.Exists(data));
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

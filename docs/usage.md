@@ -259,6 +259,24 @@ $pairingCode = '<arm-pairing 提供的一次性代码>'
 
 `fs write` 用于小型原子文件更新，也可使用 `--source <local-file>` 替代 `--data`。
 
+### 6.3 一键更新受管端
+
+先在控制端构建完整发布目录，然后由已配对控制端上传、校验并触发受管端更新：
+
+```powershell
+.\scripts\Publish-RemoteController.ps1 -OutputPath .\artifacts\publish
+& $rcctl update apply $endpoint --fingerprint $fingerprint `
+  --package .\artifacts\publish --wait --text
+```
+
+控制端会为目录中每个文件生成 SHA-256 清单并分块上传。受管端仅接受已配对控制会话发起的更新，重新校验所有分块与最终文件哈希后，使用受限的特权更新任务停止 Agent、Broker 和 UiAgent，替换发布文件并恢复服务。更新过程保留 `ProgramData` 中的配置、证书、配对关系、任务和审计数据；安装失败时会尝试恢复先前安装目录。
+
+省略 `--wait` 时，命令会立即返回更新 ID；可在控制端或恢复连接后查询状态：
+
+```powershell
+& $rcctl update status $endpoint --fingerprint $fingerprint --update '<updateId>' --text
+```
+
 ## 7. 自动化测试模式
 
 受管端完成一次安装与配对后，Controller 侧 Agent、CI Runner 或编排脚本可无需交互式受管端操作，按以下顺序执行：
