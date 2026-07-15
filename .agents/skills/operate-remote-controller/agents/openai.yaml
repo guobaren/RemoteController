@@ -1,0 +1,4 @@
+interface:
+  display_name: "RemoteController 操作"
+  short_description: "安全部署、配对并操作 RemoteController Windows 节点"
+  default_prompt: "Use $operate-remote-controller to deploy, pair, and operate a RemoteController node safely."
