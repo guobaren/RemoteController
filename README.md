@@ -129,6 +129,7 @@ dotnet publish .\src\Rc.InteractiveTestApp\Rc.InteractiveTestApp.csproj `
   -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
 Copy-Item .\scripts\Install-RemoteController.ps1, .\scripts\Uninstall-RemoteController.ps1 $agentPackage
 Copy-Item .\scripts\Start-RemoteControllerUiTest.cmd, .\scripts\Test-RemoteControllerUi.ps1 $agentPackage
+Copy-Item .\scripts\Setup-RemoteControllerAgent.cmd, .\scripts\Setup-RemoteControllerAgent.ps1, .\scripts\RemoteController.Agent.config.json $agentPackage
 
 # 发布控制端 CLI。
 dotnet publish .\src\Rc.Cli\Rc.Cli.csproj `
@@ -159,6 +160,29 @@ Set-Location C:\Temp\RemoteController
 ```powershell
 .\Install-RemoteController.ps1 -SourcePath $PWD -WhatIf
 ```
+
+
+### 3.1 被控端获取文件后的一键初始化
+
+发布包包含 `Setup-RemoteControllerAgent.cmd`、`Setup-RemoteControllerAgent.ps1` 和 `RemoteController.Agent.config.json`。将整个发布包复制到被控端后，编辑配置文件并双击运行 `.cmd` 即可完成安装/刷新服务、生成 Agent TLS 身份并输出设备 ID、TLS SHA-256 指纹和一次性配对码：
+
+```bat
+Setup-RemoteControllerAgent.cmd
+```
+
+配置文件中的关键字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `SourcePath` | 发布文件目录；默认 `.`，相对于配置文件所在目录。 |
+| `InstallPath` / `DataRoot` | Agent 安装目录和状态目录。 |
+| `TcpPort` | Agent TCP 端口，默认 `43001`。 |
+| `UiUser` | UI Agent 登录用户；留空时使用当前管理员账户。 |
+| `NoFirewallRule` | 是否跳过 Private/Domain 入站防火墙规则。 |
+| `RegenerateIdentity` | 默认 `true`。每次运行先停止服务、清除旧配对并重新生成 TLS 证书/私钥，因此每次都会得到新指纹，控制端必须重新配对。设为 `false` 可仅刷新并重启服务、保留现有身份。 |
+| `ArmPairing` | 默认 `true`，生成 10 分钟有效的一次性配对码。 |
+
+脚本具备重复运行保护：每次运行都会先刷新安装文件并停止/启动 Broker、Agent 服务；启用 `RegenerateIdentity` 时会先本地解除旧控制端配对，再由 Agent 在服务重启时生成新的设备身份。私钥只保存在受 ACL 保护的数据目录中，不会打印到控制台。脚本会自动请求管理员权限。
 
 ### 4. UI Agent 与服务部署限制
 
