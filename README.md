@@ -8,6 +8,7 @@
 
 - [功能概览](#功能概览)
 - [面向 Agent 的项目目标](#面向-agent-的项目目标)
+- [Codex Skill](#codex-skill)
 - [架构与安全边界](#架构与安全边界)
 - [环境要求](#环境要求)
 - [构建、发布与部署](#构建发布与部署)
@@ -59,6 +60,39 @@ RemoteController 的最终使用者不是人工桌面操作员，而是运行在
 当前实现使用独立的 Chromium CDP 本机回环调试通道读取 Edge/Chrome 页面 DOM，并通过 UI Automation 处理窗口与浏览器外壳。当前已验证浏览器启动、导航、窗口句柄复用和页面 DOM 读取；Firefox 等浏览器的页面 DOM 能力不等同于 Chromium CDP 能力。
 
 本项目没有直接复制 Windows-MCP 的代码。若后续直接复用其代码或 substantial portions，应在实现中保留 [Windows-MCP 的 MIT 许可和版权声明](https://github.com/CursorTouch/Windows-MCP/blob/main/LICENSE.md)，并在发布制品中补充第三方许可清单。浏览器控制同样必须受本项目的配对认证、权限隔离、会话范围和审计约束，不能因为浏览器自动化而绕过安全边界。
+
+## Codex Skill
+
+仓库内提供项目级 Agent Skill：[`operate-remote-controller`](.agents/skills/operate-remote-controller/SKILL.md)。它面向使用 Codex 或兼容 Agent Skills 的开发者，汇总了以下操作流程：
+
+- 构建、测试和生成完整发布包；
+- 在被控端执行一键初始化、保留或重新生成设备身份；
+- 发现设备、核对 TLS 指纹并完成控制端配对；
+- 使用 `rcctl` 执行命令、管理长任务、传输文件以及控制桌面和浏览器；
+- 执行远程更新、诊断服务和核对当前测试缺口；
+- 避免泄露配对码、误用 `--elevated` 或在常规刷新时意外清除已有配对。
+
+在支持项目级 Skills 的客户端中打开本仓库后，可直接调用：
+
+```text
+$operate-remote-controller
+```
+
+若需要在其他项目或任务中使用，可从仓库根目录将其安装到当前 Windows 用户的 Codex Skills 目录：
+
+```powershell
+$source = Resolve-Path '.\.agents\skills\operate-remote-controller'
+$destination = Join-Path $env:USERPROFILE '.codex\skills\operate-remote-controller'
+
+if (Test-Path -LiteralPath $destination) {
+    throw "目标 Skill 已存在，请先确认是否需要更新：$destination"
+}
+
+New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+Copy-Item -LiteralPath $source -Destination $destination -Recurse
+```
+
+安装后在下一次对话中使用 `$operate-remote-controller`。该 Skill 是 Agent 操作指南，不会替代被控端的 `Setup-RemoteControllerAgent.cmd`，普通部署用户无需安装它。具体行为仍以当前代码、脚本和 [`docs/CURRENT_PROGRESS.md`](docs/CURRENT_PROGRESS.md) 为准。
 
 ## 架构与安全边界
 
