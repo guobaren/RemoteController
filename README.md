@@ -30,7 +30,7 @@
 | 文件/目录传输 | `copy` 支持上传、下载、会话状态查询、分块哈希校验以及基于会话 ID 的续传。 |
 | 显式提权 | `exec --elevated` 和 `job start --elevated` 可交给独立的本地 Privileged Broker。Broker 只监听本地命名管道，不开放网络端口。 |
 | Windows 服务安装 | 安装脚本可部署 `RemoteControllerAgent`（LocalService）和 `RemoteControllerBroker`（LocalSystem）服务，创建受限数据目录并可添加 Private/Domain 入站防火墙规则。 |
-| 一键更新 | `rcctl update apply` 可上传完整发布包、校验清单与分块哈希并触发受控更新；更新脚本停止服务、保留旧安装目录，失败时回滚并重启旧服务。 |
+| 一键更新 | `rcctl update apply` 可上传完整发布包、校验清单与分块哈希并触发受控更新；更新脚本停止服务、保留旧安装目录，并在安装脚本执行失败时回滚并重启旧服务。 |
 | 桌面 UI 自动化 | 通过登录用户会话中的 `Rc.UiAgent` 支持显示器/窗口枚举、截图、窗口动作、鼠标、键盘、快捷键、文本、剪贴板和 Windows UI Automation 元素树/元素动作。 |
 | 浏览器控制 | `rcctl ui browser` 支持 Edge/Chrome 启动、导航和受控 Chromium CDP DOM/可访问性树读取；浏览器操作要求目标登录会话和显式窗口句柄。 |
 
@@ -107,40 +107,13 @@ dotnet test Rc.RemoteController.sln --no-build --no-restore -v minimal
 
 ### 2. 生成被控机安装包
 
-以下命令把 Agent、Broker 和 TaskHost 发布到同一目录；安装脚本以该目录作为 `-SourcePath`。`Rc.Cli` 是控制端程序，建议单独发布到控制端目录。
+使用仓库发布脚本生成规范的 Windows x64 完整发布包。该脚本与 Windows CI 使用同一发布入口，会把 Agent、Broker、TaskHost、UI Agent、验收程序、CLI 和部署脚本收集到同一目录：
 
 ```powershell
-$agentPackage = Join-Path $PWD 'artifacts\agent-package'
-$controllerPackage = Join-Path $PWD 'artifacts\controller-package'
-
-# 清理/创建输出目录后，发布被控机所需二进制文件。
-Remove-Item $agentPackage -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Path $agentPackage | Out-Null
-
-dotnet publish .\src\Rc.Agent\Rc.Agent.csproj `
-  -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
-dotnet publish .\src\Rc.PrivilegedBroker\Rc.PrivilegedBroker.csproj `
-  -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
-dotnet publish .\src\Rc.TaskHost\Rc.TaskHost.csproj `
-  -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
-dotnet publish .\src\Rc.UiAgent\Rc.UiAgent.csproj `
-  -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
-dotnet publish .\src\Rc.UiTestApp\Rc.UiTestApp.csproj `
-  -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
-dotnet publish .\src\Rc.InteractiveTestApp\Rc.InteractiveTestApp.csproj `
-  -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
-Copy-Item .\scripts\Install-RemoteController.ps1, .\scripts\Update-RemoteController.ps1, .\scripts\Uninstall-RemoteController.ps1 $agentPackage
-Copy-Item .\scripts\Start-RemoteControllerUiTest.cmd, .\scripts\Test-RemoteControllerUi.ps1 $agentPackage
-
-# 发布控制端 CLI。
-dotnet publish .\src\Rc.Cli\Rc.Cli.csproj `
-  -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $controllerPackage
-
-# 一键更新包必须同时包含控制端 CLI。
-Copy-Item $controllerPackage\Rc.Cli.exe $agentPackage
+.\scripts\Publish-RemoteController.ps1 -OutputPath .\artifacts\publish -Configuration Release
 ```
 
-将 `artifacts\agent-package` 复制到被控机（例如 `C:\Temp\RemoteController`），将 `artifacts\controller-package\Rc.Cli.exe` 放在控制端可执行的位置。请按自己的发行、签名和恶意软件防护流程处理生成的可执行文件。
+将 `artifacts\publish` 复制到被控机（例如 `C:\Temp\RemoteController`），并将其中的 `Rc.Cli.exe` 单独复制到控制端可执行位置。首次安装本身不要求被控机保留 CLI，但一键更新协议要求完整更新包包含 CLI，因此建议始终保存脚本生成的完整发布包。请按自己的发行、签名和恶意软件防护流程处理生成的可执行文件。
 
 ### 3. 安装为 Windows 服务
 
@@ -191,12 +164,12 @@ Set-Location C:\Temp\RemoteController
 
 ## 一键更新
 
-控制端使用**完整发布包目录**更新已配对的被控机。包中必须包含 Agent、Broker、TaskHost、UI Agent、两个验收程序、CLI、`Install-RemoteController.ps1` 和 `Update-RemoteController.ps1`；上节的构建命令会生成此目录。建议先在隔离环境验证待发布包，再执行生产升级。
+控制端使用**完整发布包目录**更新已配对的被控机。包中必须包含 Agent、Broker、TaskHost、UI Agent、两个验收程序、CLI、`Install-RemoteController.ps1` 和 `Update-RemoteController.ps1`；上节的发布脚本会生成此目录。建议先在隔离环境验证待发布包，再执行生产升级。
 
 ```powershell
 # --wait 会在 Agent 服务重启期间自动重连并等待最终状态。
 & $rcctl update apply 192.168.1.50:43001 --fingerprint <SHA256> `
-  --package .\artifacts\agent-package --wait --timeout-seconds 600 --text
+  --package .\artifacts\publish --wait --timeout-seconds 600 --text
 
 # 如控制端在升级过程中退出，可用上一次输出的 updateId 继续查询。
 & $rcctl update status 192.168.1.50:43001 --fingerprint <SHA256> `
@@ -205,7 +178,7 @@ Set-Location C:\Temp\RemoteController
 
 控制端会从包内 `Rc.Agent.exe` 读取版本（无法读取时必须显式传入 `--version`），构建 SHA-256 清单后以默认 256 KiB 分块上传；可用 `--chunk-size 1-262144` 调整。被控端只接受已配对控制端的签名请求，拒绝路径越界、篡改块、缺失必需文件、超过 1 GiB 的包及版本降级。更新会话和任务 ID 存放在受保护的数据根中，便于重连后查询。
 
-更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本。安装失败时会删除不完整的新目录、恢复旧目录并尝试启动旧服务；`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。真实双节点更新、断线续传和失败回滚的发布环境验收仍在进行中，状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
+更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本。安装脚本抛出错误时会删除不完整的新目录、恢复旧目录并尝试启动旧服务；当前成功判定依据更新任务退出码，不包含更新后的服务健康探针或业务验收。`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。真实双节点更新、断线续传和失败回滚的发布环境验收仍在进行中，状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
 
 ## 首次连接与日常使用
 
@@ -328,7 +301,7 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 | --- | --- |
 | `rcctl discover [--timeout-ms 1-60000] [--text]` | 监听 UDP 发现公告。 |
 | `rcctl probe <IP:port> --fingerprint <SHA256> [--text]` | 读取 Agent 的公开设备与配对状态，同时验证 TLS 指纹。 |
-| `rcctl pair <IP:port> --fingerprint <SHA256> [--name <名称>] [--text]` | 发起首次配对；随后从标准输入读取一次性代码。 |
+| `rcctl pair <IP:port> --fingerprint <SHA256> [--name <名称>] [--code <一次性配对码>] [--text]` | 发起首次配对；省略 `--code` 时从标准输入读取一次性代码。 |
 | `rcctl exec <IP:port> --fingerprint <SHA256> --command <命令> [--shell powershell\|cmd] [--workdir <路径>] [--elevated] [--text]` | 执行单次命令。 |
 | `rcctl job start <IP:port> ... --command <命令> [--shell ...] [--workdir ...] [--elevated] [--pty] [--cols 1-1000] [--rows 1-1000] [--text]` | 启动持久化任务。 |
 | `rcctl job status <IP:port> --fingerprint <SHA256> --job <jobId> [--text]` | 查询单个任务状态。 |
@@ -355,7 +328,7 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 | `rcctl ui browser <IP:port> --fingerprint <SHA256> launch\|navigate\|dom ...` | 启动/导航 Edge 或 Chrome，并读取受控浏览器的 DOM。 |
 | `Rc.Agent.exe unpair` | **在被控机本地**删除现有控制端配对并使待配对邀请失效。 |
 
-CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令输出单个 JSON envelope，失败也输出带稳定错误码的 JSON envelope 并返回非零退出码。具体参数规则以 `src\Rc.Cli\Commands` 的实现为准。
+CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令通常输出单个 JSON envelope。失败会写入标准错误并返回非零退出码，但当前部分命令仍输出纯文本错误，并未统一提供稳定错误码。具体参数规则和输出格式以 `src\Rc.Cli\Commands` 的实现为准。
 
 ## 运行配置
 
@@ -379,6 +352,8 @@ CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令
 | `RC_UI_AGENT_CONTROL_CLIENT_SID` | 安装脚本设置为 Agent 服务 SID | UI Agent 控制管道允许连接的 Agent SID。 |
 
 安装脚本会为两个服务写入其所需环境变量，包括 Broker 密钥路径、TaskHost 路径、受信任 SID 与 TCP 端口。手工运行 Agent 时，如果要与服务实例共享状态或使用自定义根目录，应显式设置对应变量并理解 DPAPI 绑定到运行账户带来的影响。
+
+安装脚本当前不会设置 `RC_AGENT_FILE_ROOT`；以默认 LocalService 账户运行时，文件根目录取该服务账户的用户目录。生产部署建议把它显式设置为专用数据目录，并在修改 `RemoteControllerAgent` 服务的 `Environment` 多字符串配置后重启服务。不要用普通进程级 `set`/`$env:` 临时变量代替服务环境配置。
 
 ## 声明、限制与安全注意事项
 
