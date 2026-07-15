@@ -130,8 +130,10 @@ Set-ServiceEnvironment $brokerService @(
     "RC_BROKER_SECRET_PATH=$secretPath", "RC_BROKER_CLIENT_SID=$agentAccountSid"
 )
 if ($PSCmdlet.ShouldProcess($uiTaskName, "Create or update UI Agent logon task for $UiUser")) {
-    $taskArgument = "/d /s /c `"set RC_UI_AGENT_CONTROL_CLIENT_SID=$agentAccountSid&& `"$uiAgentExe`" run`""
-    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" -Argument $taskArgument
+    # UiAgent is a console application. Run it through a hidden host so the logon
+    # task does not leave a visible CMD window on the interactive desktop.
+    $taskArgument = "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"`$env:RC_UI_AGENT_CONTROL_CLIENT_SID = '$agentAccountSid'; & '$uiAgentExe' run`""
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $taskArgument
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $UiUser
     $principal = New-ScheduledTaskPrincipal -UserId $UiUser -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $uiTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
