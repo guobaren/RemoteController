@@ -23,6 +23,10 @@ public static class ControlRequestAuthentication
     private static readonly byte[] JobCancelDomain = "RemoteController/job_cancel/v1"u8.ToArray();
     private static readonly byte[] JobWaitDomain = "RemoteController/job_wait/v1"u8.ToArray();
     private static readonly byte[] JobResizeDomain = "RemoteController/job_resize/v1"u8.ToArray();
+    private static readonly byte[] UpdateStartDomain = "RemoteController/update_start/v1"u8.ToArray();
+    private static readonly byte[] UpdateWriteChunkDomain = "RemoteController/update_write_chunk/v1"u8.ToArray();
+    private static readonly byte[] UpdateCompleteDomain = "RemoteController/update_complete/v1"u8.ToArray();
+    private static readonly byte[] UpdateStatusDomain = "RemoteController/update_status/v1"u8.ToArray();
 
     public static byte[] SignSessionAuthentication(
         string agentDeviceId,
@@ -100,6 +104,30 @@ public static class ControlRequestAuthentication
 
     public static bool VerifyJobResize(string agentDeviceId, string controllerId, string jobId, int columns, int rows, ReadOnlySpan<byte> signature, ECDsa publicKey) =>
         Verify(JobResizeDomain, agentDeviceId, controllerId, new JobResizePayload(jobId, columns, rows), signature, publicKey);
+
+    public static byte[] SignUpdateStart(string agentDeviceId, string controllerId, UpdateStartRequest request, ECDsa privateKey) =>
+        Sign(UpdateStartDomain, agentDeviceId, controllerId, request, privateKey);
+
+    public static bool VerifyUpdateStart(string agentDeviceId, string controllerId, UpdateStartRequest request, ReadOnlySpan<byte> signature, ECDsa publicKey) =>
+        Verify(UpdateStartDomain, agentDeviceId, controllerId, request, signature, publicKey);
+
+    public static byte[] SignUpdateWriteChunk(string agentDeviceId, string controllerId, UpdateWriteChunkRequest request, ECDsa privateKey) =>
+        Sign(UpdateWriteChunkDomain, agentDeviceId, controllerId, new UpdateChunkPayload(request.UpdateId, request.RelativePath, request.Offset, request.Sha256), privateKey);
+
+    public static bool VerifyUpdateWriteChunk(string agentDeviceId, string controllerId, UpdateWriteChunkRequest request, ReadOnlySpan<byte> signature, ECDsa publicKey) =>
+        Verify(UpdateWriteChunkDomain, agentDeviceId, controllerId, new UpdateChunkPayload(request.UpdateId, request.RelativePath, request.Offset, request.Sha256), signature, publicKey);
+
+    public static byte[] SignUpdateComplete(string agentDeviceId, string controllerId, UpdateCompleteRequest request, ECDsa privateKey) =>
+        Sign(UpdateCompleteDomain, agentDeviceId, controllerId, request, privateKey);
+
+    public static bool VerifyUpdateComplete(string agentDeviceId, string controllerId, UpdateCompleteRequest request, ReadOnlySpan<byte> signature, ECDsa publicKey) =>
+        Verify(UpdateCompleteDomain, agentDeviceId, controllerId, request, signature, publicKey);
+
+    public static byte[] SignUpdateStatus(string agentDeviceId, string controllerId, UpdateStatusRequest request, ECDsa privateKey) =>
+        Sign(UpdateStatusDomain, agentDeviceId, controllerId, request, privateKey);
+
+    public static bool VerifyUpdateStatus(string agentDeviceId, string controllerId, UpdateStatusRequest request, ReadOnlySpan<byte> signature, ECDsa publicKey) =>
+        Verify(UpdateStatusDomain, agentDeviceId, controllerId, request, signature, publicKey);
     private static byte[] Sign<T>(byte[] domain, string agentDeviceId, string controllerId, T payload, ECDsa privateKey)
     {
         ArgumentNullException.ThrowIfNull(privateKey);
@@ -167,4 +195,5 @@ public static class ControlRequestAuthentication
     private sealed record JobInputPayload(string JobId, byte[] Data);
     private sealed record JobWaitPayload(string JobId, TimeSpan? Timeout);
     private sealed record JobResizePayload(string JobId, int Columns, int Rows);
+    private sealed record UpdateChunkPayload(Guid UpdateId, string RelativePath, long Offset, string Sha256);
 }

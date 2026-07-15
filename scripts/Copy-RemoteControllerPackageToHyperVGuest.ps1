@@ -29,6 +29,7 @@ $packageFiles = @(
     'Rc.InteractiveTestApp.exe',
     'Rc.Cli.exe',
     'Install-RemoteController.ps1',
+    'Update-RemoteController.ps1',
     'Uninstall-RemoteController.ps1',
     'Start-RemoteController.cmd',
     'Start-RemoteControllerUiTest.cmd',

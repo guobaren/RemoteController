@@ -36,13 +36,14 @@ static Task<int> DispatchAsync(string[] arguments, TextWriter output, TextWriter
     "fs" => FileCommand.RunFsAsync(arguments[1..], output, error),
     "copy" => FileCommand.RunCopyAsync(arguments[1..], output, error),
     "ui" => UiCommand.RunAsync(arguments[1..], output, error),
+    "update" => UpdateCommand.RunAsync(arguments[1..], output, error),
     _ => WriteUsageAndReturnAsync(error, arguments[0]),
 };
 
 static Task<int> WriteUsageAndReturnAsync(TextWriter error, string? command = null)
 {
     var prefix = command is null ? string.Empty : $"Unknown command: {command}. ";
-    error.WriteLine($"{prefix}Usage: rcctl discover ... | rcctl probe ... | rcctl pair ... | rcctl exec ... | rcctl job ... | rcctl fs ... | rcctl copy ... | rcctl ui ...");
+    error.WriteLine($"{prefix}Usage: rcctl discover ... | rcctl probe ... | rcctl pair ... | rcctl exec ... | rcctl job ... | rcctl fs ... | rcctl copy ... | rcctl ui ... | rcctl update ...");
     return Task.FromResult(2);
 }
 

@@ -49,6 +49,10 @@ public const string FileManifest = "file_manifest";
     public const string TransferStatus = "transfer_status";
     public const string UiStatus = "ui_status";
     public const string UiCommand = "ui_command";
+    public const string UpdateStart = "update_start";
+    public const string UpdateWriteChunk = "update_write_chunk";
+    public const string UpdateComplete = "update_complete";
+    public const string UpdateStatus = "update_status";
 }
 
 public sealed record ControlUiStatusRequest(int ProtocolVersion, string ControllerId)
@@ -239,3 +243,7 @@ public sealed record ControlTransferWriteChunkRequest(int ProtocolVersion, strin
 public sealed record ControlTransferReadChunkRequest(int ProtocolVersion, string ControllerId, TransferReadChunkRequest Request) { public string Kind => ControlMessageKinds.TransferReadChunk; }
 public sealed record ControlTransferCompleteRequest(int ProtocolVersion, string ControllerId, TransferCompleteRequest Request) { public string Kind => ControlMessageKinds.TransferComplete; }
 public sealed record ControlTransferStatusRequest(int ProtocolVersion, string ControllerId, TransferStatusRequest Request) { public string Kind => ControlMessageKinds.TransferStatus; }
+public sealed record ControlUpdateStartRequest(int ProtocolVersion, string ControllerId, UpdateStartRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateStart; }
+public sealed record ControlUpdateWriteChunkRequest(int ProtocolVersion, string ControllerId, UpdateWriteChunkRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateWriteChunk; }
+public sealed record ControlUpdateCompleteRequest(int ProtocolVersion, string ControllerId, UpdateCompleteRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateComplete; }
+public sealed record ControlUpdateStatusRequest(int ProtocolVersion, string ControllerId, UpdateStatusRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateStatus; }

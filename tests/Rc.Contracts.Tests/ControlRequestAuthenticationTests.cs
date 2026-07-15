@@ -64,4 +64,30 @@ public sealed class ControlRequestAuthenticationTests
             CryptographicOperations.ZeroMemory(startSignature);
         }
     }
+
+    [Fact]
+    public void UpdateSignaturesAreBoundToTheManifestAndChunkHash()
+    {
+        using var privateKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var manifest = new UpdatePackageManifest("RemoteController", "1.2.3", [
+            new UpdatePackageFile("Rc.Agent.exe", 12, new string('A', 64)),
+        ]);
+        var start = new UpdateStartRequest(Guid.NewGuid(), manifest);
+        var chunk = new UpdateWriteChunkRequest(start.UpdateId, "Rc.Agent.exe", 0, [1, 2, 3], Convert.ToHexString(SHA256.HashData([1, 2, 3])));
+        var startSignature = ControlRequestAuthentication.SignUpdateStart("agent-1", "controller-1", start, privateKey);
+        var chunkSignature = ControlRequestAuthentication.SignUpdateWriteChunk("agent-1", "controller-1", chunk, privateKey);
+
+        try
+        {
+            Assert.True(ControlRequestAuthentication.VerifyUpdateStart("agent-1", "controller-1", start, startSignature, privateKey));
+            Assert.False(ControlRequestAuthentication.VerifyUpdateStart("agent-1", "controller-1", start with { UpdateId = Guid.NewGuid() }, startSignature, privateKey));
+            Assert.True(ControlRequestAuthentication.VerifyUpdateWriteChunk("agent-1", "controller-1", chunk, chunkSignature, privateKey));
+            Assert.False(ControlRequestAuthentication.VerifyUpdateWriteChunk("agent-1", "controller-1", new UpdateWriteChunkRequest(start.UpdateId, "Rc.Agent.exe", 0, [1, 2, 3], new string('B', 64)), chunkSignature, privateKey));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(startSignature);
+            CryptographicOperations.ZeroMemory(chunkSignature);
+        }
+    }
 }

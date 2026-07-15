@@ -11,6 +11,7 @@
 - [架构与安全边界](#架构与安全边界)
 - [环境要求](#环境要求)
 - [构建、发布与部署](#构建发布与部署)
+- [一键更新](#一键更新)
 - [首次连接与日常使用](#首次连接与日常使用)
 - [命令参考](#命令参考)
 - [运行配置](#运行配置)
@@ -29,6 +30,7 @@
 | 文件/目录传输 | `copy` 支持上传、下载、会话状态查询、分块哈希校验以及基于会话 ID 的续传。 |
 | 显式提权 | `exec --elevated` 和 `job start --elevated` 可交给独立的本地 Privileged Broker。Broker 只监听本地命名管道，不开放网络端口。 |
 | Windows 服务安装 | 安装脚本可部署 `RemoteControllerAgent`（LocalService）和 `RemoteControllerBroker`（LocalSystem）服务，创建受限数据目录并可添加 Private/Domain 入站防火墙规则。 |
+| 一键更新 | `rcctl update apply` 可上传完整发布包、校验清单与分块哈希并触发受控更新；更新脚本停止服务、保留旧安装目录，失败时回滚并重启旧服务。 |
 | 桌面 UI 自动化 | 通过登录用户会话中的 `Rc.UiAgent` 支持显示器/窗口枚举、截图、窗口动作、鼠标、键盘、快捷键、文本、剪贴板和 Windows UI Automation 元素树/元素动作。 |
 | 浏览器控制 | `rcctl ui browser` 支持 Edge/Chrome 启动、导航和受控 Chromium CDP DOM/可访问性树读取；浏览器操作要求目标登录会话和显式窗口句柄。 |
 
@@ -127,12 +129,15 @@ dotnet publish .\src\Rc.UiTestApp\Rc.UiTestApp.csproj `
   -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
 dotnet publish .\src\Rc.InteractiveTestApp\Rc.InteractiveTestApp.csproj `
   -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $agentPackage
-Copy-Item .\scripts\Install-RemoteController.ps1, .\scripts\Uninstall-RemoteController.ps1 $agentPackage
+Copy-Item .\scripts\Install-RemoteController.ps1, .\scripts\Update-RemoteController.ps1, .\scripts\Uninstall-RemoteController.ps1 $agentPackage
 Copy-Item .\scripts\Start-RemoteControllerUiTest.cmd, .\scripts\Test-RemoteControllerUi.ps1 $agentPackage
 
 # 发布控制端 CLI。
 dotnet publish .\src\Rc.Cli\Rc.Cli.csproj `
   -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $controllerPackage
+
+# 一键更新包必须同时包含控制端 CLI。
+Copy-Item $controllerPackage\Rc.Cli.exe $agentPackage
 ```
 
 将 `artifacts\agent-package` 复制到被控机（例如 `C:\Temp\RemoteController`），将 `artifacts\controller-package\Rc.Cli.exe` 放在控制端可执行的位置。请按自己的发行、签名和恶意软件防护流程处理生成的可执行文件。
@@ -183,6 +188,24 @@ Set-Location C:\Temp\RemoteController
 ```
 
 卸载脚本拒绝递归删除 `Program Files` 或 `ProgramData` 以外的默认安全边界路径；自定义路径时仍应先执行 `-WhatIf` 并人工核对。
+
+## 一键更新
+
+控制端使用**完整发布包目录**更新已配对的被控机。包中必须包含 Agent、Broker、TaskHost、UI Agent、两个验收程序、CLI、`Install-RemoteController.ps1` 和 `Update-RemoteController.ps1`；上节的构建命令会生成此目录。建议先在隔离环境验证待发布包，再执行生产升级。
+
+```powershell
+# --wait 会在 Agent 服务重启期间自动重连并等待最终状态。
+& $rcctl update apply 192.168.1.50:43001 --fingerprint <SHA256> `
+  --package .\artifacts\agent-package --wait --timeout-seconds 600 --text
+
+# 如控制端在升级过程中退出，可用上一次输出的 updateId 继续查询。
+& $rcctl update status 192.168.1.50:43001 --fingerprint <SHA256> `
+  --update <updateId> --text
+```
+
+控制端会从包内 `Rc.Agent.exe` 读取版本（无法读取时必须显式传入 `--version`），构建 SHA-256 清单后以默认 256 KiB 分块上传；可用 `--chunk-size 1-262144` 调整。被控端只接受已配对控制端的签名请求，拒绝路径越界、篡改块、缺失必需文件、超过 1 GiB 的包及版本降级。更新会话和任务 ID 存放在受保护的数据根中，便于重连后查询。
+
+更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本。安装失败时会删除不完整的新目录、恢复旧目录并尝试启动旧服务；`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。真实双节点更新、断线续传和失败回滚的发布环境验收仍在进行中，状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
 
 ## 首次连接与日常使用
 
@@ -319,6 +342,8 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 | `rcctl fs list\|stat\|read\|write <IP:port> <路径> --fingerprint <SHA256> ...` | 文件根目录内的列举、属性、读取和写入；`read` 支持 `--offset`/`--max-bytes`，`write` 使用 `--data` 或 `--source`，可加 `--overwrite`。 |
 | `rcctl copy upload\|download <IP:port> <路径> --fingerprint <SHA256> --to <路径> [--chunk-size <字节>] [--session <id>]` | 上传或下载文件/目录，`--session` 用于继续既有会话。 |
 | `rcctl copy status <IP:port> <会话ID> --fingerprint <SHA256>` | 查询传输会话。也可使用 `--session <会话ID>`。 |
+| `rcctl update apply <IP:port> --fingerprint <SHA256> --package <目录> [--version <版本>] [--chunk-size 1-262144] [--wait] [--timeout-seconds 1-3600] [--text]` | 上传完整发布包并启动带回滚的更新。 |
+| `rcctl update status <IP:port> --fingerprint <SHA256> --update <GUID> [--text]` | 查询已提交更新的接收、应用或最终状态。 |
 | `rcctl ui status\|snapshot\|displays\|windows <IP:port> --fingerprint <SHA256> [--text]` | 查询活动 UI 会话、显示器、窗口和快照。 |
 | `rcctl ui screenshot <IP:port> --fingerprint <SHA256> <display\|window> <目标>` | 获取指定显示器或窗口的 PNG 截图。 |
 | `rcctl ui window <IP:port> --fingerprint <SHA256> window <句柄> <activate\|minimize\|maximize\|restore\|close>` | 控制窗口状态。 |
@@ -346,6 +371,8 @@ CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令
 | `RC_AUDIT_QUOTA_BYTES` | `16 MiB` | 审计记录配额。 |
 | `RC_TRANSFER_QUOTA_BYTES` | `200 MiB` | 传输数据配额。 |
 | `RC_TRANSFER_MAX_CHUNK_BYTES` | `1 MiB` | 传输分块最大值。 |
+| `RC_UPDATE_MAX_PACKAGE_BYTES` | `1 GiB` | 一次一键更新允许接收的最大包大小。 |
+| `RC_UPDATE_MAX_CHUNK_BYTES` | `256 KiB` | 一键更新分块的最大值；控制端 `--chunk-size` 不得超过它。 |
 | `RC_FILE_MAX_WRITE_BYTES` | `16 MiB` | `fs write` 单次原子写入最大值。 |
 | `RC_CONTROLLER_DATA_ROOT` | `%LOCALAPPDATA%\RemoteController` | 控制端 DPAPI 保护的身份文件目录。 |
 | `RC_UI_AGENT_CLIENT_SID` | 安装脚本根据 `-UiUser` 设置 | Agent 注册管道允许连接的 UI 用户 SID。 |
@@ -364,3 +391,4 @@ CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令
 7. **任务恢复有边界。** 状态、任务元数据、输出和传输会话会持久化以支持查询/续读；但系统重启、进程崩溃、外部命令自身行为和权限变化都可能使任务进入终态或不可继续。不要依赖它自动重放任意命令。
 8. **文件根目录必须最小化。** 通过 `RC_AGENT_FILE_ROOT` 将暴露范围限制为专用目录，不要直接把系统盘根目录、用户配置目录或敏感凭据目录设为根目录。
 9. **文档与实现版本需同步。** UI 和浏览器能力已完成主要实现与验收，但仍应在目标 Windows 版本、网络策略、终端防护和服务账户策略下执行完整发布回归。
+10. **更新仍需发布环境门禁。** 更新请求会经过配对认证和完整性校验，并带有安装目录回滚；但生产前仍应在目标服务账户、终端防护和网络策略下完成真实双节点升级、断线恢复和故障回滚演练。
