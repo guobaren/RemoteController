@@ -1,0 +1,10 @@
+{
+  "SourcePath": ".",
+  "InstallPath": "C:\\Program Files\\RemoteController",
+  "DataRoot": "C:\\ProgramData\\RemoteController",
+  "TcpPort": 43001,
+  "UiUser": "",
+  "NoFirewallRule": false,
+  "RegenerateIdentity": true,
+  "ArmPairing": true
+}

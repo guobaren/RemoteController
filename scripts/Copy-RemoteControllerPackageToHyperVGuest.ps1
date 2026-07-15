@@ -34,7 +34,10 @@ $packageFiles = @(
     'Start-RemoteController.cmd',
     'Start-RemoteControllerUiTest.cmd',
     'Test-RemoteControllerUi.ps1',
-    'Repair-RemoteControllerTlsIdentity.ps1'
+    'Repair-RemoteControllerTlsIdentity.ps1',
+    'Setup-RemoteControllerAgent.ps1',
+    'Setup-RemoteControllerAgent.cmd',
+    'RemoteController.Agent.config.json'
 )
 
 foreach ($file in $packageFiles) {
