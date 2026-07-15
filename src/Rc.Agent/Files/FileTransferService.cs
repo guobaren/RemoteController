@@ -10,12 +10,14 @@ public sealed class FileTransferService : IDisposable
     private readonly AgentStateStore store;
     private readonly AgentOptions options;
     private readonly SafeFileRoot paths;
+    private readonly TimeProvider timeProvider;
     private readonly SemaphoreSlim mutationGate = new(1, 1);
 
-    public FileTransferService(AgentStateStore store, AgentOptions? options = null)
+    public FileTransferService(AgentStateStore store, AgentOptions? options = null, TimeProvider? timeProvider = null)
     {
         this.store = store ?? throw new ArgumentNullException(nameof(store));
         this.options = options ?? new AgentOptions();
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         paths = new SafeFileRoot(this.options.FileRoot);
     }
 
@@ -80,7 +82,7 @@ public sealed class FileTransferService : IDisposable
             ValidateManifest(manifest, request.DestinationPath);
         }
         EnsureQuota(manifest);
-        var now = DateTimeOffset.UtcNow;
+        var now = timeProvider.GetUtcNow();
         var snapshot = new TransferSessionSnapshot(
             "transfer-" + Guid.NewGuid().ToString("N"), request.Direction, TransferSessionState.Transferring,
             request.SourcePath, request.DestinationPath, manifest, request.ChunkSize, now, now.Add(options.TransferSessionLifetime));
@@ -191,7 +193,7 @@ public sealed class FileTransferService : IDisposable
     private async Task<TransferSessionSnapshot> GetSessionAsync(string id, CancellationToken cancellationToken)
     {
         var session = await store.GetTransferSessionAsync(id, cancellationToken) ?? throw new KeyNotFoundException($"No transfer session exists with ID '{id}'.");
-        if (session.ExpiresAtUtc <= DateTimeOffset.UtcNow && session.State == TransferSessionState.Transferring)
+        if (session.ExpiresAtUtc <= timeProvider.GetUtcNow() && session.State == TransferSessionState.Transferring)
         {
             session = Clone(session, state: TransferSessionState.Expired);
             await store.SaveTransferSessionAsync(session, cancellationToken);

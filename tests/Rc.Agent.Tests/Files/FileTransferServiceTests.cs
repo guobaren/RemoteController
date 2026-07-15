@@ -147,12 +147,13 @@ public sealed class FileTransferServiceTests
         await store.InitializeAsync();
         var data = Encoding.UTF8.GetBytes("abcdefgh");
         var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, data.Length, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData(data)))]);
-        using var service = CreateService(store, directory.Path, lifetime: TimeSpan.FromMilliseconds(100));
+        var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        using var service = CreateService(store, directory.Path, lifetime: TimeSpan.FromMinutes(1), timeProvider: timeProvider);
         var session = (await service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "expired.bin", manifest, 4))).Session;
         await service.WriteChunkAsync(new TransferWriteChunkRequest(
             new FileChunk(session.SessionId, string.Empty, 0, data[..4], false),
             Convert.ToHexString(SHA256.HashData(data[..4]))));
-        await Task.Delay(200);
+        timeProvider.Advance(TimeSpan.FromMinutes(1));
 
         var status = await service.StatusAsync(new TransferStatusRequest(session.SessionId));
 
@@ -176,12 +177,21 @@ public sealed class FileTransferServiceTests
         var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, 1, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData([1]))) ]);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "dest.bin", manifest, 5)));
     }
-    private static FileTransferService CreateService(AgentStateStore store, string root, long quota = 1024, int atomicWriteLimit = 1024, TimeSpan? lifetime = null) => new(store, new AgentOptions
+    private static FileTransferService CreateService(AgentStateStore store, string root, long quota = 1024, int atomicWriteLimit = 1024, TimeSpan? lifetime = null, TimeProvider? timeProvider = null) => new(store, new AgentOptions
     {
         FileRoot = root,
         TransferQuotaBytes = quota,
         MaximumTransferChunkBytes = 4,
         MaximumAtomicWriteBytes = atomicWriteLimit,
         TransferSessionLifetime = lifetime ?? TimeSpan.FromHours(1),
-    });
+    }, timeProvider);
+
+    private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        private DateTimeOffset currentUtc = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => currentUtc;
+
+        public void Advance(TimeSpan duration) => currentUtc = currentUtc.Add(duration);
+    }
 }
