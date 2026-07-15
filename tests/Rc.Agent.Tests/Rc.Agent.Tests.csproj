@@ -15,6 +15,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rc.Agent\Rc.Agent.csproj" />
+    <ProjectReference Include="..\..\src\Rc.Cli\Rc.Cli.csproj" />
     <ProjectReference Include="..\..\src\Rc.TaskHost\Rc.TaskHost.csproj" />
     <ProjectReference Include="..\..\src\Rc.UiTestApp\Rc.UiTestApp.csproj" />
     <ProjectReference Include="..\..\src\Rc.UiAgent\Rc.UiAgent.csproj" />

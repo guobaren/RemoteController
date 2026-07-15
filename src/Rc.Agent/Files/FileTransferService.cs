@@ -21,10 +21,7 @@ public sealed class FileTransferService : IDisposable
 
     public async Task<FileListResponse> ListAsync(FileListRequest request, CancellationToken cancellationToken = default)
     {
-        var root = paths.Resolve(request.RootPath);
-        if (!Directory.Exists(root)) throw new DirectoryNotFoundException(request.RootPath);
-        var mode = request.Recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-        var entries = Directory.EnumerateFileSystemEntries(root, "*", mode)
+        var entries = paths.Enumerate(request.RootPath, request.Recursive)
             .Select(GetMetadata).OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
         return await Task.FromResult(new FileListResponse(entries));
     }
@@ -214,12 +211,18 @@ public sealed class FileTransferService : IDisposable
         }
         else if (Directory.Exists(full))
         {
-            foreach (var dir in Directory.EnumerateDirectories(full, "*", SearchOption.AllDirectories))
-                entries.Add(new FileManifestEntry(Path.GetRelativePath(full, dir).Replace('\\', '/'), 0, Directory.GetLastWriteTimeUtc(dir), null));
-            foreach (var file in Directory.EnumerateFiles(full, "*", SearchOption.AllDirectories))
+            foreach (var entry in paths.Enumerate(rootPath, recursive: true))
             {
-                var info = new FileInfo(file);
-                entries.Add(new FileManifestEntry(Path.GetRelativePath(full, file).Replace('\\', '/'), info.Length, info.LastWriteTimeUtc, await HashFileAsync(file, cancellationToken)));
+                var relativePath = Path.GetRelativePath(full, entry).Replace('\\', '/');
+                if (Directory.Exists(entry))
+                {
+                    entries.Add(new FileManifestEntry(relativePath, 0, Directory.GetLastWriteTimeUtc(entry), null));
+                }
+                else
+                {
+                    var info = new FileInfo(entry);
+                    entries.Add(new FileManifestEntry(relativePath, info.Length, info.LastWriteTimeUtc, await HashFileAsync(entry, cancellationToken)));
+                }
             }
         }
         else throw new FileNotFoundException("The file root does not exist.", rootPath);

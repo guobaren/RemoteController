@@ -14,7 +14,7 @@ public sealed class InstallationScriptTests
         var install = Path.Combine(directory.Path, "install");
         var data = Path.Combine(directory.Path, "data");
         Directory.CreateDirectory(source);
-        foreach (var file in new[] { "Rc.Agent.exe", "Rc.PrivilegedBroker.exe", "Rc.TaskHost.exe", "Rc.UiAgent.exe", "Rc.UiTestApp.exe", "Rc.InteractiveTestApp.exe", "Rc.Cli.exe" })
+        foreach (var file in new[] { "Rc.Agent.exe", "Rc.PrivilegedBroker.exe", "Rc.TaskHost.exe", "Rc.UiAgent.exe", "Rc.UiTestApp.exe", "Rc.InteractiveTestApp.exe" })
         {
             await File.WriteAllBytesAsync(Path.Combine(source, file), []);
         }

@@ -108,10 +108,12 @@ public static class FileCommand
     private static async Task DownloadAsync(AuthenticatedControlConnection connection, TransferSessionSnapshot session, string localDestination)
     {
         var root = Path.GetFullPath(localDestination);
-        foreach (var directory in session.Manifest.Entries.Where(e => e.Sha256 is null)) Directory.CreateDirectory(Path.Combine(root, directory.RelativePath.Replace('/', Path.DirectorySeparatorChar)));
-        foreach (var entry in session.Manifest.Entries.Where(e => e.Sha256 is not null))
+        var destinations = LocalTransferPaths.ResolveManifest(root, session.Manifest);
+        foreach (var item in destinations.Where(item => item.Entry.Sha256 is null)) Directory.CreateDirectory(item.Path);
+        foreach (var item in destinations.Where(item => item.Entry.Sha256 is not null))
         {
-            var final = string.IsNullOrEmpty(entry.RelativePath) ? root : Path.Combine(root, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            var entry = item.Entry;
+            var final = item.Path;
             Directory.CreateDirectory(Path.GetDirectoryName(final)!);
             var part = final + ".rc-part";
             var offset = File.Exists(part) ? new FileInfo(part).Length : 0;
@@ -133,14 +135,18 @@ public static class FileCommand
         }
     }
 
-    private static async Task<FileManifest> BuildLocalManifestAsync(string path)
+    internal static async Task<FileManifest> BuildLocalManifestAsync(string path)
     {
         var full = Path.GetFullPath(path); var entries = new List<FileManifestEntry>();
         if (File.Exists(full)) { var f = new FileInfo(full); entries.Add(new FileManifestEntry(string.Empty, f.Length, f.LastWriteTimeUtc, await HashFileAsync(full))); }
         else if (Directory.Exists(full))
         {
-            foreach (var d in Directory.EnumerateDirectories(full, "*", SearchOption.AllDirectories)) entries.Add(new FileManifestEntry(Path.GetRelativePath(full, d).Replace('\\', '/'), 0, Directory.GetLastWriteTimeUtc(d), null));
-            foreach (var file in Directory.EnumerateFiles(full, "*", SearchOption.AllDirectories)) { var f = new FileInfo(file); entries.Add(new FileManifestEntry(Path.GetRelativePath(full, file).Replace('\\', '/'), f.Length, f.LastWriteTimeUtc, await HashFileAsync(file))); }
+            foreach (var entry in LocalTransferPaths.Enumerate(full))
+            {
+                var relativePath = Path.GetRelativePath(full, entry).Replace('\\', '/');
+                if (Directory.Exists(entry)) entries.Add(new FileManifestEntry(relativePath, 0, Directory.GetLastWriteTimeUtc(entry), null));
+                else { var file = new FileInfo(entry); entries.Add(new FileManifestEntry(relativePath, file.Length, file.LastWriteTimeUtc, await HashFileAsync(entry))); }
+            }
         }
         else throw new FileNotFoundException(path);
         return new FileManifest(full, entries);
@@ -162,4 +168,54 @@ public static class FileCommand
     private static async Task<int> FailAsync(TextWriter error,string message){await error.WriteLineAsync(message);return 1;}
     private static string UsageFs()=>"Usage: rcctl fs list|stat|read|write <IP:port> <path> --fingerprint <SHA256> ...";
     private static string UsageCopy()=>"Usage: rcctl copy upload|download|status <IP:port> <path|session> --fingerprint <SHA256> ...";
+}
+
+internal static class LocalTransferPaths
+{
+    internal sealed record ManifestDestination(FileManifestEntry Entry, string Path);
+
+    public static IReadOnlyList<ManifestDestination> ResolveManifest(string root, FileManifest manifest)
+    {
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var destinations = new List<ManifestDestination>(manifest.Entries.Count);
+        foreach (var entry in manifest.Entries)
+        {
+            if (Path.IsPathFullyQualified(entry.RelativePath))
+            {
+                throw new InvalidDataException("Download manifest paths must be relative.");
+            }
+
+            var path = string.IsNullOrEmpty(entry.RelativePath)
+                ? root
+                : Path.GetFullPath(Path.Combine(root, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar)));
+            if ((!string.Equals(path, root, StringComparison.OrdinalIgnoreCase) && !path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) || !seen.Add(path))
+            {
+                throw new InvalidDataException("Download manifest contains an unsafe or duplicate path.");
+            }
+            destinations.Add(new ManifestDestination(entry, path));
+        }
+        return destinations;
+    }
+
+    public static IReadOnlyList<string> Enumerate(string root)
+    {
+        var entries = new List<string>();
+        EnumerateDirectory(root, entries);
+        return entries;
+    }
+
+    private static void EnumerateDirectory(string directory, List<string> entries)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+        {
+            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new InvalidDataException("Upload paths cannot contain reparse points.");
+            }
+            entries.Add(entry);
+            if (Directory.Exists(entry)) EnumerateDirectory(entry, entries);
+        }
+    }
 }

@@ -49,7 +49,7 @@ function Set-ServiceEnvironment([string]$ServiceName, [string[]]$Entries) {
 
 if (-not $PSBoundParameters.ContainsKey('WhatIf')) { Assert-Administrator }
 $source = (Resolve-Path -LiteralPath $SourcePath).Path
-foreach ($file in @('Rc.Agent.exe', 'Rc.PrivilegedBroker.exe', 'Rc.TaskHost.exe', 'Rc.UiAgent.exe', 'Rc.UiTestApp.exe', 'Rc.InteractiveTestApp.exe', 'Rc.Cli.exe')) {
+foreach ($file in @('Rc.Agent.exe', 'Rc.PrivilegedBroker.exe', 'Rc.TaskHost.exe', 'Rc.UiAgent.exe', 'Rc.UiTestApp.exe', 'Rc.InteractiveTestApp.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $source $file) -PathType Leaf)) { throw "Missing required publish artifact: $file" }
 }
 function Stop-ManagedService([string]$ServiceName) {

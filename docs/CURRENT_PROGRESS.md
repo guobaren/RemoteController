@@ -1,5 +1,13 @@
 # RemoteController 当前进度
 
+## 2026-07-16 本地完整测试已知失败
+
+- Release 构建通过：0 warning、0 error。
+- 完整测试共 234 项，其中 233 项通过，1 项失败。
+- 失败项：`Rc.TaskHost.Tests.TaskHostRunnerTests.PseudoConsoleCancellationForceKillsAfterGraceWhenInterruptIsIgnored`。
+- 本机使用 .NET SDK 10.0.301 执行 `net8.0-windows` 测试时，该用例配置 200ms 取消宽限期，但连续三次分别约 148ms、133ms、148ms 返回，未达到断言要求的 150ms 下限。
+- 该失败目前作为任务取消/ConPTY 时序回归项保留，尚未修改生产取消语义或降低断言；需要在目标 .NET 8 SDK 和 CI/VM 环境复核后单独处理。
+
 > 最后核对：2026-07-16
 >
 > 本文件是仓库唯一的进度与验收记录；用户功能、部署流程、命令参考和安全声明统一维护在根目录 [README.md](../README.md)。

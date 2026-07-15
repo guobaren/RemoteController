@@ -12,9 +12,9 @@ public sealed class SafeFileRoot
     public SafeFileRoot(string root)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        Root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         Directory.CreateDirectory(Root);
-        rootPrefix = Root + Path.DirectorySeparatorChar;
+        rootPrefix = Path.EndsInDirectorySeparator(Root) ? Root : Root + Path.DirectorySeparatorChar;
     }
 
     public string Root { get; }
@@ -46,7 +46,7 @@ public sealed class SafeFileRoot
         }
         ValidateSegments(relativePath);
         var combined = Path.GetFullPath(Path.Combine(basePath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        var prefix = basePath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var prefix = Path.EndsInDirectorySeparator(basePath) ? basePath : basePath + Path.DirectorySeparatorChar;
         if (!combined.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
         {
             throw new UnauthorizedAccessException("The manifest path escapes its transfer root.");
@@ -56,6 +56,36 @@ public sealed class SafeFileRoot
     }
 
     public string ToDisplayPath(string fullPath) => Path.GetRelativePath(Root, fullPath).Replace('\\', '/');
+
+    public IReadOnlyList<string> Enumerate(string rootPath, bool recursive)
+    {
+        var root = Resolve(rootPath);
+        if (!Directory.Exists(root))
+        {
+            throw new DirectoryNotFoundException(rootPath);
+        }
+
+        var entries = new List<string>();
+        EnumerateDirectory(root, recursive, entries);
+        return entries;
+    }
+
+    private static void EnumerateDirectory(string directory, bool recursive, List<string> entries)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+        {
+            if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new UnauthorizedAccessException("Reparse points are not allowed in file paths.");
+            }
+
+            entries.Add(entry);
+            if (recursive && Directory.Exists(entry))
+            {
+                EnumerateDirectory(entry, true, entries);
+            }
+        }
+    }
 
     private static void ValidateSegments(string path)
     {
