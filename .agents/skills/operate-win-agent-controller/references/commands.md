@@ -1,4 +1,4 @@
-# Controller command recipes
+# WinAgentController command recipes
 
 Set reusable values in PowerShell when running several commands:
 

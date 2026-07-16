@@ -1,13 +1,13 @@
 ---
-name: operate-remote-controller
-description: Deploy, install, pair, operate, update, validate, and troubleshoot the RemoteController Windows LAN remote-control project. Use when working in this repository or with its published package, rcctl CLI, managed Agent services, file transfer, jobs, UI/browser automation, or target-side one-click setup.
+name: operate-win-agent-controller
+description: Deploy, install, pair, operate, update, validate, and troubleshoot the WinAgentController Windows LAN remote-control project. Use when working in this repository or with its published package, rcctl CLI, managed Agent services, file transfer, jobs, UI/browser automation, or target-side one-click setup.
 ---
 
-# Operate RemoteController
+# Operate WinAgentController
 
 ## Overview
 
-Operate RemoteController from source checkout through target deployment and authenticated control. Treat the repository README, CLI usage strings, and `docs/CURRENT_PROGRESS.md` as the live sources of truth.
+Operate WinAgentController from source checkout through target deployment and authenticated control. Treat the repository README, CLI usage strings, and `docs/CURRENT_PROGRESS.md` as the live sources of truth.
 
 ## Choose the workflow
 

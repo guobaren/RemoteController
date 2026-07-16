@@ -1,4 +1,4 @@
-# Validation and troubleshooting
+# WinAgentController validation and troubleshooting
 
 ## Establish current state
 

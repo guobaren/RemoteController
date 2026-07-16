@@ -1,0 +1,4 @@
+interface:
+  display_name: "WinAgentController 操作"
+  short_description: "安全部署、配对并操作 WinAgentController Windows 节点"
+  default_prompt: "Use $operate-win-agent-controller to deploy, pair, and operate a WinAgentController node safely."

@@ -1,4 +1,4 @@
-# Deployment and lifecycle
+# WinAgentController deployment and lifecycle
 
 ## Build and publish
 

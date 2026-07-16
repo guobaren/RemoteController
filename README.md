@@ -1,4 +1,4 @@
-# RemoteController
+# WinAgentController
 
 > 面向 **Windows 10/11 x64 局域网** 的单控制端远程控制原型。一个 `rcctl` 控制端与一台 Agent 建立经证书指纹固定的 TLS 连接；首次配对后，控制端可执行单次命令、管理可恢复任务、读写受限文件根目录并传输文件或目录。
 
@@ -41,7 +41,7 @@
 
 ## 面向 Agent 的项目目标
 
-RemoteController 的最终使用者不是人工桌面操作员，而是运行在控制端的 AI Agent 或其他自动化 Agent。项目的目标是为 Agent 提供一个可验证、可恢复、可审计的远端 Windows 控制面：
+WinAgentController 的最终使用者不是人工桌面操作员，而是运行在控制端的 AI Agent 或其他自动化 Agent。项目的目标是为 Agent 提供一个可验证、可恢复、可审计的远端 Windows 控制面：
 
 - Agent 可以发现被控机、核对设备指纹、完成一次性配对，并在后续请求中复用签名认证会话；
 - Agent 可以用结构化 JSON 结果执行命令、管理长任务、读取增量日志、写入标准输入、取消任务和等待终态，而不需要解析远端桌面文本；
@@ -63,7 +63,7 @@ RemoteController 的最终使用者不是人工桌面操作员，而是运行在
 
 ## Codex Skill
 
-仓库内提供项目级 Agent Skill：[`operate-remote-controller`](.agents/skills/operate-remote-controller/SKILL.md)。它面向使用 Codex 或兼容 Agent Skills 的开发者，汇总了以下操作流程：
+仓库内提供项目级 Agent Skill：[`operate-win-agent-controller`](.agents/skills/operate-win-agent-controller/SKILL.md)。它面向使用 Codex 或兼容 Agent Skills 的开发者，汇总了以下操作流程：
 
 - 构建、测试和生成完整发布包；
 - 在被控端执行一键初始化、保留或重新生成设备身份；
@@ -75,14 +75,14 @@ RemoteController 的最终使用者不是人工桌面操作员，而是运行在
 在支持项目级 Skills 的客户端中打开本仓库后，可直接调用：
 
 ```text
-$operate-remote-controller
+$operate-win-agent-controller
 ```
 
 若需要在其他项目或任务中使用，可从仓库根目录将其安装到当前 Windows 用户的 Codex Skills 目录：
 
 ```powershell
-$source = Resolve-Path '.\.agents\skills\operate-remote-controller'
-$destination = Join-Path $env:USERPROFILE '.codex\skills\operate-remote-controller'
+$source = Resolve-Path '.\.agents\skills\operate-win-agent-controller'
+$destination = Join-Path $env:USERPROFILE '.codex\skills\operate-win-agent-controller'
 
 if (Test-Path -LiteralPath $destination) {
     throw "目标 Skill 已存在，请先确认是否需要更新：$destination"
@@ -92,7 +92,7 @@ New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
 Copy-Item -LiteralPath $source -Destination $destination -Recurse
 ```
 
-安装后在下一次对话中使用 `$operate-remote-controller`。该 Skill 是 Agent 操作指南，不会替代被控端的 `Setup-RemoteControllerAgent.cmd`，普通部署用户无需安装它。具体行为仍以当前代码、脚本和 [`docs/CURRENT_PROGRESS.md`](docs/CURRENT_PROGRESS.md) 为准。
+安装后在下一次对话中使用 `$operate-win-agent-controller`。该 Skill 是 Agent 操作指南，不会替代被控端的 `Setup-RemoteControllerAgent.cmd`，普通部署用户无需安装它。具体行为仍以当前代码、脚本和 [`docs/CURRENT_PROGRESS.md`](docs/CURRENT_PROGRESS.md) 为准。
 
 ## 架构与安全边界
 
@@ -147,14 +147,14 @@ dotnet test Rc.RemoteController.sln --no-build --no-restore -v minimal
 .\scripts\Publish-RemoteController.ps1 -OutputPath .\artifacts\publish -Configuration Release
 ```
 
-将 `artifacts\publish` 复制到被控机（例如 `C:\Temp\RemoteController`），并将其中的 `Rc.Cli.exe` 单独复制到控制端可执行位置。首次安装本身不要求被控机保留 CLI，但一键更新协议要求完整更新包包含 CLI，因此建议始终保存脚本生成的完整发布包。请按自己的发行、签名和恶意软件防护流程处理生成的可执行文件。
+将 `artifacts\publish` 复制到被控机（例如 `C:\Temp\WinAgentController`），并将其中的 `Rc.Cli.exe` 单独复制到控制端可执行位置。首次安装本身不要求被控机保留 CLI，但一键更新协议要求完整更新包包含 CLI，因此建议始终保存脚本生成的完整发布包。请按自己的发行、签名和恶意软件防护流程处理生成的可执行文件。
 
 ### 3. 安装为 Windows 服务
 
 在**被控机的提升权限 PowerShell**中执行：
 
 ```powershell
-Set-Location C:\Temp\RemoteController
+Set-Location C:\Temp\WinAgentController
 .\Install-RemoteController.ps1 -SourcePath $PWD -TcpPort 43001 -UiUser 'CONTOSO\alice'
 ```
 
@@ -242,7 +242,7 @@ Setup-RemoteControllerAgent.cmd
 下文以控制端 CLI 为例。可为路径设置别名以简化输入：
 
 ```powershell
-$rcctl = 'C:\Tools\RemoteController\Rc.Cli.exe'
+$rcctl = 'C:\Tools\WinAgentController\Rc.Cli.exe'
 ```
 
 ### 发现并核对设备
