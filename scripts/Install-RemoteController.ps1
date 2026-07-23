@@ -125,6 +125,19 @@ if ($PSCmdlet.ShouldProcess("$agentService, $brokerService", 'Create or update W
 $agentAccountSid = ([Security.Principal.NTAccount]'NT AUTHORITY\LOCAL SERVICE').Translate([Security.Principal.SecurityIdentifier]).Value
 $brokerAccountSid = ([Security.Principal.NTAccount]'NT AUTHORITY\SYSTEM').Translate([Security.Principal.SecurityIdentifier]).Value
 $uiUserSid = ([Security.Principal.NTAccount]$UiUser).Translate([Security.Principal.SecurityIdentifier]).Value
+$uiLauncherPath = Join-Path $InstallPath 'Rc.UiAgentLauncher.vbs'
+$escapedUiAgentExe = $uiAgentExe.Replace('"', '""')
+$escapedAgentAccountSid = $agentAccountSid.Replace('"', '""')
+$uiLauncherContent = @"
+Option Explicit
+Dim shell
+Set shell = CreateObject("WScript.Shell")
+shell.Environment("Process")("RC_UI_AGENT_CONTROL_CLIENT_SID") = "$escapedAgentAccountSid"
+shell.Run Chr(34) & "$escapedUiAgentExe" & Chr(34) & " run", 0, False
+"@
+if ($PSCmdlet.ShouldProcess($uiLauncherPath, 'Create hidden UiAgent launcher')) {
+    [IO.File]::WriteAllText($uiLauncherPath, $uiLauncherContent, [Text.Encoding]::ASCII)
+}
 if ($PSCmdlet.ShouldProcess($DataRoot, 'Create and secure service data directory')) {
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
     & "$env:SystemRoot\System32\icacls.exe" $DataRoot '/inheritance:r' '/grant:r' "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-19:(OI)(CI)F" | Out-Host
@@ -139,10 +152,8 @@ Set-ServiceEnvironment $brokerService @(
     "RC_BROKER_SECRET_PATH=$secretPath", "RC_BROKER_CLIENT_SID=$agentAccountSid"
 )
 if ($PSCmdlet.ShouldProcess($uiTaskName, "Create or update UI Agent logon task for $UiUser")) {
-    # UiAgent is a console application. Run it through a hidden host so the logon
-    # task does not leave a visible CMD window on the interactive desktop.
-    $taskArgument = "-NoProfile -NonInteractive -WindowStyle Hidden -Command `"`$env:RC_UI_AGENT_CONTROL_CLIENT_SID = '$agentAccountSid'; & '$uiAgentExe' run`""
-    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $taskArgument
+    # Use wscript.exe so the console application's standard output has no visible host window.
+    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wscript.exe" -Argument "//B //Nologo `"$uiLauncherPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $UiUser
     $principal = New-ScheduledTaskPrincipal -UserId $UiUser -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $uiTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null

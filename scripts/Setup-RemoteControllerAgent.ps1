@@ -141,6 +141,14 @@ catch {
 
 $installer = Join-Path $sourcePath 'Install-RemoteController.ps1'
 $agentExe = Join-Path $installPath 'Rc.Agent.exe'
+if (-not (Test-Path -LiteralPath (Join-Path $sourcePath 'Rc.Agent.exe') -PathType Leaf)) {
+    $repositoryPackage = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\artifacts\publish'))
+    if (Test-Path -LiteralPath (Join-Path $repositoryPackage 'Rc.Agent.exe') -PathType Leaf) {
+        $sourcePath = $repositoryPackage
+        $installer = Join-Path $PSScriptRoot 'Install-RemoteController.ps1'
+        Write-Host "Using repository publish package: $sourcePath"
+    }
+}
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Missing installer: $installer" }
 if (-not (Test-Path -LiteralPath (Join-Path $sourcePath 'Rc.Agent.exe') -PathType Leaf)) { throw "Missing package artifact: Rc.Agent.exe" }
 
@@ -151,14 +159,14 @@ Write-Host "Data root: $dataRoot"
 Write-Host "TCP port: $tcpPort"
 Write-Host "UI user: $uiUser"
 
-$installerArguments = @(
-    '-SourcePath', $sourcePath,
-    '-InstallPath', $installPath,
-    '-DataRoot', $dataRoot,
-    '-TcpPort', $tcpPort,
-    '-UiUser', $uiUser
-)
-if ($noFirewallRule) { $installerArguments += '-NoFirewallRule' }
+$installerArguments = @{
+    SourcePath = $sourcePath
+    InstallPath = $installPath
+    DataRoot = $dataRoot
+    TcpPort = $tcpPort
+    UiUser = $uiUser
+}
+if ($noFirewallRule) { $installerArguments.NoFirewallRule = $true }
 
 Write-Host '[1/5] Installing or refreshing the service package...'
 & $installer @installerArguments

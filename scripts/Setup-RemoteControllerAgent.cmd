@@ -1,12 +1,19 @@
 @echo off
 setlocal EnableExtensions
 
-set "CONFIG_PATH=%~1"
+if /I not "%~1"=="__RUN_SETUP" (
+    start "RemoteController Agent Setup" cmd.exe /d /k call "%~f0" __RUN_SETUP "%~1"
+    exit /b 0
+)
+
+set "CONFIG_PATH=%~2"
 if "%CONFIG_PATH%"=="" set "CONFIG_PATH=%~dp0RemoteController.Agent.config.json"
 
 if not exist "%CONFIG_PATH%" (
     echo [ERROR] Configuration file was not found: "%CONFIG_PATH%"
     echo        Pass a config path as the first argument or place RemoteController.Agent.config.json beside this file.
+    echo.
+    pause
     exit /b 2
 )
 
@@ -18,5 +25,11 @@ set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     echo.
     echo [ERROR] RemoteController Agent setup failed with exit code %EXIT_CODE%.
+    echo Review the PowerShell error output above for the failure reason.
+) else (
+    echo.
+    echo [OK] RemoteController Agent setup completed successfully.
 )
+echo.
+pause
 exit /b %EXIT_CODE%
